@@ -209,10 +209,10 @@ def diffimg_run(sci_image_name, sci_image_path,
     #print("^_^ All Done with %7.3f seconds."%dt)
     return
 
-if __name__ == "__main__":
-    sci_image_name = "my_sc_tztf20aawpldl_g_20231210132654_106_sciimg.fits"
-    sci_image_path = "/Users/dzliu/Workspace/Mephisto/Pipeline/transFinder/images/sci"
-    diff_image_path = "/Users/dzliu/Workspace/Mephisto/Pipeline/transFinder/images/diff"
-    refcat_meta_path = "/Users/dzliu/Workspace/Mephisto/Pipeline/transFinder/images/ref"
-
-    diffimg_run(sci_image_name, sci_image_path, diff_image_path, refcat_meta_path)
+#if __name__ == "__main__":
+#    sci_image_name = "mr_sc_tngc5466_i_20240128201600_136_sciimg.fits"
+#    sci_image_path = "/Users/dzliu/Workspace/Mephisto/TransFinder/images/tarimg/ngc5466"
+#    diff_image_path = "/Users/dzliu/Workspace/Mephisto/TransFinder/images/diffimg"
+#    refcat_meta_path = "/Users/dzliu/Workspace/Mephisto/TransFinder/images/refimg"
+#
+#    diffimg_run(sci_image_name, sci_image_path, diff_image_path, refcat_meta_path)
