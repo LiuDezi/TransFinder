@@ -36,7 +36,8 @@ path_default = os.path.dirname(__file__)
 
 def diffimg_run(sci_image_name, sci_image_path, 
                 diff_image_path, 
-                refcat_meta_path, 
+                trans_cand_path, 
+                refcat_meta_path,
                 refcat_meta="reference_image_mephisto.cat"):
     """
     Perform image differencing for a new science image
@@ -80,6 +81,8 @@ def diffimg_run(sci_image_name, sci_image_path,
     new_image_abs = os.path.join(diff_image_path, new_image_name)
     diff_image_name = new_image_name[:-4] + "diff.fits"
     diff_image_abs = os.path.join(diff_image_path, diff_image_name)
+    diffinv_image_name = new_image_name[:-4] + "idiff.fits"
+    diffinv_image_abs = os.path.join(diff_image_path, diffinv_image_name)
     diff_psf_name = diff_image_name[:-4] + "psf.fits"
     diff_psf_abs = os.path.join(diff_image_path, diff_psf_name)
 
@@ -119,45 +122,59 @@ def diffimg_run(sci_image_name, sci_image_path,
     # perform image differencing
     print("^_^ Do image differencing ...")
     diffObj = ddiff.DiffImg(ref_meta, new_meta, ref_psf_model, new_psf_model, ref_mask=ref_mask.mask, new_mask=new_mask.mask)
-    fits.writeto(diff_image_abs, diffObj.Dimg.T, header=new_meta.image_header, overwrite=True)
     fits.writeto(diff_psf_abs, diffObj.Dpsf.T, overwrite=True)
     t4  = time.time()
     dt4 = t4 - t3
     print(f"^_^ Image differencing is done, {dt4:7.3f} seconds used")
-
-    # source detection on the difference image
+    
+    # source detection on both the difference and inverse-difference images
     print("^_^ Detect objects on the difference image")
     sex_config_file = os.path.join(path_default, "config/default_config.sex")
     sex_param_file = os.path.join(path_default, "config/default_param.sex")
-    diffCatn = diff_image_abs[:-4] + "ldac"
-    sexComd1 = f"{sex_comd} {diff_image_abs} -c {sex_config_file} -PARAMETERS_NAME {sex_param_file} "
-    sexComd2 = f"-CATALOG_NAME {diffCatn} -WEIGHT_TYPE NONE "
-    sexComd3 = "-DETECT_THRESH 1.5 -ANALYSIS_THRESH 1.5 -DETECT_MINAREA 3 "
-    sexComd  = sexComd1 + sexComd2 + sexComd3
-    subprocess.run(sexComd, shell=True)
+    for idet in range(2):
+        if idet==0:
+            idet_key = "difference"
+            idiff_image_abs = diff_image_abs
+            fits.writeto(idiff_image_abs, diffObj.Dimg.T, header=new_meta.image_header, overwrite=True)
+        else: # idet==1
+            idet_key = "inverse difference"
+            idiff_image_abs = diffinv_image_abs
+            fits.writeto(idiff_image_abs, 0.0-diffObj.Dimg.T, header=new_meta.image_header, overwrite=True)
 
-    diffCat  = Table.read(diffCatn, format="fits", hdu=2)
-    nObjs    = len(diffCat)
-    print(f"    Total {nObjs} objects detected")
-    # save the stamp of each detection
-    ids    = diffCat["NUMBER"]
-    ra     = diffCat["ALPHA_J2000"]
-    dec    = diffCat["DELTA_J2000"]
-    ximg   = diffCat["XWIN_IMAGE"]
-    yimg   = diffCat["YWIN_IMAGE"]
-    mag    = diffCat["MAG_AUTO"]
-    magErr = diffCat["MAGERR_AUTO"]
-    fwhm   = diffCat["FWHM_IMAGE"]
-    flag   = diffCat["FLAGS"]
-    snr    = diffCat["SNR_WIN"]
-    transReg = diff_image_abs[:-4] + "reg"
-    dutl.wds9reg(ra,dec,radius=5.0,unit="arcsec",color="green",outfile=transReg)
+        diffCatn = idiff_image_abs[:-4] + "ldac"
+        sexComd1 = f"{sex_comd} {idiff_image_abs} -c {sex_config_file} -PARAMETERS_NAME {sex_param_file} "
+        sexComd2 = f"-CATALOG_NAME {diffCatn} -WEIGHT_TYPE NONE "
+        sexComd3 = "-DETECT_THRESH 1.5 -ANALYSIS_THRESH 1.5 -DETECT_MINAREA 3 "
+        sexComd  = sexComd1 + sexComd2 + sexComd3
+        subprocess.run(sexComd, shell=True)
 
-    # extract image stamps
-    #diffImgMat = fits.getdata(diff_image_abs)
-    #alertCatn  = altdir + newimg[:-4] + "alert.cat"
-    #alertCat   = open(alertCatn, "w")
-    #alertCat.write("#id name ra dec ximg yimg mag magerr fwhm flags atEdge SNR\n")
+        diffCat  = Table.read(diffCatn, format="fits", hdu=2)
+        nObjs    = len(diffCat)
+        print(f"    Total {nObjs} objects detected on the {idet_key} image")
+        
+        # save the stamp of each detection
+        ids    = diffCat["NUMBER"]
+        ra     = diffCat["ALPHA_J2000"]
+        dec    = diffCat["DELTA_J2000"]
+        ximg   = diffCat["XWIN_IMAGE"]
+        yimg   = diffCat["YWIN_IMAGE"]
+        mag    = diffCat["MAG_AUTO"]
+        magErr = diffCat["MAGERR_AUTO"]
+        fwhm   = diffCat["FWHM_IMAGE"]
+        flag   = diffCat["FLAGS"]
+        snr    = diffCat["SNR_WIN"]
+        
+        # remove bogus objects
+        gid = (fwhm>=1.0) & (snr>0.0)
+
+        transReg = diff_image_abs[:-4] + "reg"
+        dutl.wds9reg(ra[gid],dec[gid],radius=5.0,unit="arcsec",color="green",outfile=transReg)
+
+        # extract image stamps
+        #diffImgMat = fits.getdata(diff_image_abs)
+        #alertCatn  = altdir + newimg[:-4] + "alert.cat"
+        #alertCat   = open(alertCatn, "w")
+        #alertCat.write("#id name ra dec ximg yimg mag magerr fwhm flags atEdge SNR\n")
     #afmt = "%5d %30s %12.6f %12.6f %9.3f %9.3f %8.3f %8.3f %8.3f %2d %2d %9.3f\n"
     #stmX = stmSize//2
     #for i in range(nObjs):
@@ -209,10 +226,11 @@ def diffimg_run(sci_image_name, sci_image_path,
     #print("^_^ All Done with %7.3f seconds."%dt)
     return
 
-#if __name__ == "__main__":
-#    sci_image_name = "mr_sc_tngc5466_i_20240128201600_136_sciimg.fits"
-#    sci_image_path = "/Users/dzliu/Workspace/Mephisto/TransFinder/images/tarimg/ngc5466"
-#    diff_image_path = "/Users/dzliu/Workspace/Mephisto/TransFinder/images/diffimg"
-#    refcat_meta_path = "/Users/dzliu/Workspace/Mephisto/TransFinder/images/refimg"
-#
-#    diffimg_run(sci_image_name, sci_image_path, diff_image_path, refcat_meta_path)
+if __name__ == "__main__":
+    sci_image_name = "mb_sc_tngc5466_v_20240130203739_266_sciimg.fits"
+    sci_image_path = "/Users/dzliu/Workspace/Mephisto/TransFinder/images/tarimg/ngc5466"
+    diff_image_path = "/Users/dzliu/Workspace/Mephisto/TransFinder/images/diffimg"
+    trans_cand_path = "/Users/dzliu/Workspace/Mephisto/TransFinder/images/diffimg/trans_candy"
+    refcat_meta_path = "/Users/dzliu/Workspace/Mephisto/TransFinder/images/refimg"
+
+    diffimg_run(sci_image_name, sci_image_path, diff_image_path, trans_cand_path, refcat_meta_path)

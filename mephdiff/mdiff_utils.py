@@ -38,7 +38,7 @@ def alienFile(fileName, path=None):
     ext = os.path.exists(fileName)
     return ext
 
-def d2hms(ra,dec, conv=0):
+def deg2str(ra, dec, conv=0, indicator=0):
     """
     convert ra&dec in (degree, degree) to (hhmmss, ddmmss),
     or (hhmmss, ddmmss) to (degree, degree)
@@ -50,11 +50,17 @@ def d2hms(ra,dec, conv=0):
     conv: 0 or 1
        0: (degree, degree) to (hhmmss, ddmmss)
        1: (hhmmss, ddmmss) to (degree, degree)
-    
+    indicator:
+       0: +/-
+       1: P/N
+
     Example:
     d2hms(1.0, 1.0, conv=0)
     d2hms(00:00:00.0, 00:00:00.0, conv=1)
     """
+    if indicator==0: predec = ["+", "-"]
+    if indicator==1: predec = ["P", "N"]
+
     if conv==0:
         rah = ra/15.0
         ram = (rah - int(rah))*60.0
@@ -62,8 +68,8 @@ def d2hms(ra,dec, conv=0):
         
         rah = "0%d:"%int(rah)
         ram = "0%d:"%int(ram)
-        ras = "0%.1f"%float(ras)
-        sra = rah[-3:] + ram[-3:] + ras[-4:]
+        ras = "0%.2f"%float(ras)
+        sra = rah[-3:] + ram[-3:] + ras[-5:]
 
         decabs = abs(dec)
         dech   = int(decabs)
@@ -72,25 +78,26 @@ def d2hms(ra,dec, conv=0):
         
         dech   = "0%d:"%int(dech)
         decm   = "0%d:"%int(decm)
-        decs   = "0%.1f"%float(decs)
-        sdec   = dech[-3:] + decm[-3:] + decs[-4:]
+        decs   = "0%.2f"%float(decs)
+        sdec   = dech[-3:] + decm[-3:] + decs[-5:]
         if dec < 0.0:
-            sdec = "-" + sdec
+            sdec = predec[1] + sdec
         else:
-            sdec = "+" + sdec
+            sdec = predec[0] + sdec
 
     elif conv==1:
         decSign = dec[0]
         sra = np.array(ra.split(":"), dtype=float)
         sdec = np.array(dec[1:].split(":"), dtype=float)
         sra = ((sra[-1]/60.0+sra[1])/60.0 + sra[0])*15.0
-        if decSign=="-":
+        if decSign==predec[1]:
             sdec = -((sdec[-1]/60.0+sdec[1])/60.0 + abs(sdec[0]))
-        elif decSign=="+":
+        elif decSign==predec[0]:
             sdec = (sdec[-1]/60.0+sdec[1])/60.0 + sdec[0]
         else:
             raise ValueError("!!! Give a right dec value")
     return sra, sdec
+
 
 def crossmatch(ra1, dec1, ra2, dec2, aperture=1.0):
     """
