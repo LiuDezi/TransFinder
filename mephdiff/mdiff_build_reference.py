@@ -1,11 +1,15 @@
-# further reduction about the pre-processed images
-# NOTE: the input image for image difference should have already been pre-processed by other pipeline
+# The routine is used to construct the reference image for image differencing
+# NOTE: the input image should have already been pre-processed by other pipeline
 # The pre-processing includes: bias subtraction, dark subtraction, flat-fielding, astrometric 
 # calibration, and photometric calibration. Other reductions are not required: cosmic-ray removal, 
 # sky background subtraction, bad pixel mask, etc.
 
 # This routine will resample the image based on the astrometric solution and then subtract the sky 
 # background. SWarp will be used for the goal.
+
+# Update history:
+# 20240610: /1) enable bad column interpolation;/
+#           /2) unify the pixel scale and image size for the resampled image;/
 
 import numpy as np
 from astropy.io import fits
@@ -20,7 +24,9 @@ import matplotlib.pyplot as plt
 path_default = os.path.dirname(__file__)
 # print(f"^_^ Installed directory is: {path_default}")
 
-def match_image(input_image, output_image, map_image, refine=False, photcal_figure=None):
+def resamp_image(input_image, output_image, 
+                 image_center = "00:00:00,+00:00:00",
+                 ref_catalog  = "reference_image_mephisto.cat"):
     """
     Resample the image based on the astrometric solution in the image header
 
@@ -29,10 +35,6 @@ def match_image(input_image, output_image, map_image, refine=False, photcal_figu
       input FITS image with complete absolute path
     output_image: 
       output resampled FITS image with complete absolute path
-    map_image: 
-      if map_image is specified, the 'image_center', 'image_size' and 'pixel_scale' will be extracted from it
-    refine: 
-      if map_image is specified, we can further refine the wcs of output_image to map_image
     image_center: 
       celestical center of the resampled image if 'map_image' is None
     pixel_scale: 
@@ -47,12 +49,9 @@ def match_image(input_image, output_image, map_image, refine=False, photcal_figu
     base_check = dbase.BaseCheck()
     swarp_comd = base_check.swarp_shell()
     sex_comd = base_check.sextractor_shell()
-    #base_check.gaia_catalog_check(gaia_catalog)
-    #base_check.header_check(input_image)
+    base_check.gaia_catalog_check(gaia_catalog)
+    base_check.header_check(input_image)
 
-    # check if the map image header contains wcs keywords
-    #base_check.header_check(map_image)
-    
     # normalize the image by exposure time
     image_matrix, image_header = fits.getdata(input_image, header=True)
     exptime = image_header["EXPOSURE"]
@@ -60,7 +59,7 @@ def match_image(input_image, output_image, map_image, refine=False, photcal_figu
     image_header["GAIN"] = image_header["GAIN"]*exptime
     image_header["SATURATE"] = image_header["SATURATE"]/exptime * 0.85
     image_matrix = image_matrix/exptime
-
+    
     # bad pixel mask
     image_meta = dbase.ImageMeta(band)
     xlim_badpix, ylim_badpix = image_meta.bad_column()
@@ -86,12 +85,9 @@ def match_image(input_image, output_image, map_image, refine=False, photcal_figu
 
     fits.writeto(output_image, image_matrix, image_header, overwrite=True)
 
-    map_hdr = fits.getheader(map_image)
-    ximg, yimg = map_hdr["NAXIS1"], map_hdr["NAXIS1"]
-    raCenS, decCenS = map_hdr["REF_RAS"], map_hdr["REF_DECS"]
-    pixel_scale = map_hdr["REF_PS"]
-    image_size = f"{ximg},{yimg}"
-    image_center = f"{raCenS},{decCenS}"
+    # load the default pixel scale and image size for image resampling
+    pixel_scale, image_size = image_meta.resample_param()
+    image_size = f"{image_size[0]},{image_size[1]}"
 
     # run swarp
     output_weight = output_image[:-4] + "weight.fits"
@@ -104,66 +100,13 @@ def match_image(input_image, output_image, map_image, refine=False, photcal_figu
     subprocess.run(swarp_run, shell=True)
 
     # normalize the image by exposure time
-    #output_mat, output_hdr = fits.getdata(output_image, header=True)
-    #exptime = output_hdr["EXPOSURE"]
-    #output_hdr["GAIN"] = output_hdr["GAIN"]*exptime
-    #output_hdr["SATURATE"] = output_hdr["SATURATE"]/exptime * 0.85
-    #output_mat = output_mat/exptime
-    #fits.writeto(output_image, output_mat, output_hdr, overwrite=True)
+    #image_matrix, image_header = fits.getdata(output_image, header=True)
+    #exptime = image_header["EXPOSURE"]
+    #image_header["GAIN"] = image_header["GAIN"]*exptime
+    #image_header["SATURATE"] = image_header["SATURATE"]/exptime * 0.85
+    #fits.writeto(output_image, image_matrix/exptime, image_header, overwrite=True)
 
-    # refine the image alignment
-    if refine:
-        import astroalign as aa
-        print("^_^ Refine the image alignment")
-        map_mat = fits.getdata(map_image)
-        output_mat, output_hdr = fits.getdata(output_image, header=True)
-        map_mat = map_mat.byteswap().newbyteorder()
-        output_mat = output_mat.byteswap().newbyteorder()
-        output_mat_new, __ = aa.register(output_mat, map_mat, max_control_points=100, detection_sigma=10.0, min_area=10.0)
-        map_hdr["GAIN"] = output_hdr["GAIN"]
-        map_hdr["SATURATE"] = output_hdr["SATURATE"]
-        fits.writeto(output_image, output_mat_new, map_hdr, overwrite=True)
-    
-    # perform first photometry
-    output_catalog = photometry(output_image, sex_comd)
-    photcat = fits.getdata(output_catalog, ext=2)
-    ra_pht, dec_pht = photcat["ALPHA_J2000"], photcat["DELTA_J2000"]
-    flags, snr = photcat["FLAGS"], photcat["SNR_WIN"]
-    sid = (flags==0) & (snr>20) & (snr<1000)
-    ra_pht, dec_pht = ra_pht[sid], dec_pht[sid]
-
-    # perform photometric calibration for the new image
-    map_star_catalog = map_image[:-4] + "phot_star.fits"
-    map_photcat = fits.getdata(map_star_catalog, ext=1)
-    ra_map, dec_map = map_photcat["ALPHA_J2000"], map_photcat["DELTA_J2000"]
-    
-    id_map, id_pht = utl.crossmatch(ra_map, dec_map, ra_pht, dec_pht, aperture=1.5)
-    flux_scale = map_photcat["FLUX_AUTO"][id_map]/photcat["FLUX_AUTO"][sid][id_pht]
-    mean_scale, median_scale, std_scale = sigma_clipped_stats(flux_scale, sigma=3.0, maxiters=5.0)
-
-    # update the image
-    output_mat, output_hdr = fits.getdata(output_image, header=True)
-    output_hdr["GAIN"] = output_hdr["GAIN"]/median_scale
-    output_hdr["SATURATE"] = output_hdr["SATURATE"]*median_scale
-    output_hdr["FLXSCL"] = median_scale
-    output_hdr["FLXSTD"] = std_scale
-    fits.writeto(output_image, output_mat*median_scale, output_hdr, overwrite=True)
-
-    if photcal_figure is not None:
-        map_mag = map_photcat["MAG_AUTO"][id_map]
-        xlim     = [np.min(map_mag)-0.5, np.max(map_mag)+0.5]
-        plt.scatter(map_mag, flux_scale, color="black", marker="o", s=6)
-        plt.plot(xlim, [median_scale, median_scale], "r-", linewidth=2.0)
-        plt.plot(xlim, [median_scale-std_scale, median_scale-std_scale],"r--",linewidth=1.5)
-        plt.plot(xlim, [median_scale+std_scale, median_scale+std_scale],"r--",linewidth=1.5)
-        plt.xlim(xlim)
-        plt.ylim([median_scale-5.0*std_scale, median_scale+5.0*std_scale])
-        plt.title(f"flux_scale = {median_scale:8.5f} $\pm$ {std_scale:8.5f} (#{len(id_map)} stars)", fontsize=15)
-        plt.savefig(photcal_figure)
-        plt.clf()
-        plt.close()
-
-    # perform second photometry
+    # perform photometry
     output_catalog = photometry(output_image, sex_comd)
     output_region = output_catalog[:-4] + "reg"
     photcat = fits.getdata(output_catalog, ext=2)
@@ -199,29 +142,45 @@ def match_image(input_image, output_image, map_image, refine=False, photcal_figu
     ximg_center, yimg_center = 0.5*(xsize+1), 0.5*(ysize+1)
     ra_center, dec_center = image_wcs.all_pix2world(ximg_center, yimg_center, 1)
     xra_center, xdec_center  = utl.deg2str(ra_center, dec_center)
-
-    image_header["NEW_RA"]   = (ra_center.tolist(), "RA of image center [deg]")
-    image_header["NEW_DEC"]  = (dec_center.tolist(), "DEC of image center [deg]")
-    image_header["NEW_RAS"]  = (xra_center[0], "RA of image center [hhmmss]")
-    image_header["NEW_DECS"] = (xdec_center[0], "DEC of image center [ddmmss]")
-    image_header["NEW_PS"]   = (pixel_scale, "Image pixel scale [arcsec/pixel]")
-    image_header["NEW_PUN"]  = ("adu/s", "Pixel unit")
-    image_header["NEW_FWHM"] = (median_fwhm, "Image median FWHM [pixel]")
-    image_header["NEW_MRA"]  = (median_ra, "Median RA offset of astrometry")
-    image_header["NEW_MDEC"] = (median_dec, "Median DEC offset of astrometry")
-    image_header["NEW_SRA"]  = (std_ra, "RA rms of astrometry")
-    image_header["NEW_SDEC"] = (std_dec, "DEC rms of astrometry")
-    image_header["NEW_NS"]   = (nstar, "Number of high-quality stars in Gaia catalog")
-    image_header["NEW_IMG"]  = (output_image.split("/")[-1], "New image name")
+    
+    image_header["REF_RA"]   = (ra_center.tolist(), "RA of image center [deg]")
+    image_header["REF_DEC"]  = (dec_center.tolist(), "DEC of image center [deg]")
+    image_header["REF_RAS"]  = (xra_center[0], "RA of image center [hhmmss]")
+    image_header["REF_DECS"] = (xdec_center[0], "DEC of image center [ddmmss]")
+    image_header["REF_PS"]   = (pixel_scale, "Image pixel scale [arcsec/pixel]")
+    image_header["REF_PUN"]  = ("adu/s", "Pixel unit")
+    image_header["REF_FWHM"] = (median_fwhm, "Image median FWHM [pixel]")
+    image_header["REF_MRA"]  = (median_ra, "Median RA offset of astrometry")
+    image_header["REF_MDEC"] = (median_dec, "Median DEC offset of astrometry")
+    image_header["REF_SRA"]  = (std_ra, "RA rms of astrometry")
+    image_header["REF_SDEC"] = (std_dec, "DEC rms of astrometry")
+    image_header["REF_NS"]   = (nstar, "Number of high-quality stars in Gaia catalog")
+    image_header["REF_IMG"]  = (output_image.split("/")[-1], "Reference image name")
     image_header["TF_VERS"]  = (dbase.__version__, "TransFinder version")
     image_header["TF_DATE"]  = (dbase.__version_date__, "TransFinder version date")
     image_header["TF_AUTH"]  = (dbase.__author__, "TransFinder author")
 
     fits.writeto(output_image, image_matrix, image_header, overwrite=True)
+    
+    # reference catalog
+    output_image_list = output_image.split("/")
+    ref_image = output_image_list[-1]
+    ref_catalog_path = "/".join(output_image_list[:-1])
+    ref_catalog_abs = os.path.join(ref_catalog_path, ref_catalog)
+    ref_catalog_fmt = "%30s %12.6f %12.6f %7.3f %7.3f %7.3f %7.3f %3s %7.3f %5d %7.4f %s\n"
+    ref_line = ref_catalog_fmt%(ref_image,ra_center.tolist(),dec_center.tolist(),
+                                median_ra,median_dec,std_ra,std_dec,band,
+                                median_fwhm,nstar,float(image_header["AIRMASS"]),None)
+    if not os.path.exists(ref_catalog_abs):
+        refcat = open(ref_catalog_abs, "w")
+        title  = "#ref_image ra dec mu_ra mu_dec sigma_ra sigma_dec band fwhm nstar airmass ref_path\n"
+        refcat.write(title)
+    else:
+        refcat = open(ref_catalog_abs, "a")
+    refcat.write(ref_line)
+    refcat.close()
 
-    image_list = [map_image, output_image]
-
-    return image_list
+    return
 
 def photometry(input_image, sextractor_shell):
     output_catalog = input_image[:-4] + "phot_all.fits"
@@ -236,17 +195,25 @@ def photometry(input_image, sextractor_shell):
     return output_catalog
 
 #if __name__ == "__main__":
+#    import time
 #    input_dir = "/Users/dzliu/Workspace/Mephisto/Pipeline/transFinder/images/sci"
-#    input_image = "my_sc_tztf20aawpldl_g_20231210132654_106_sciimg.fits"
+#    #input_image = "my_sc_tngc5466_g_20230604185717_192_sciimg.fits"
+#    input_image = "my_sc_tztf20aawpldl_g_20231204124352_064_sciimg.fits"
 #    input_image = os.path.join(input_dir, input_image)
 #
-#    output_dir  = "/Users/dzliu/Workspace/Mephisto/Pipeline/transFinder/images/diff"
-#    output_image = "my_sc_tztf20aawpldl_g_20231210132654_106_sciimg.fits"
+#    output_dir  = "/Users/dzliu/Workspace/Mephisto/Pipeline/transFinder/images/ref"
+#    #output_image = "my_ngc5466_g_001.fits"
+#    output_image = "my_ztf20aawpldl_g_001.fits"
 #    output_image = os.path.join(output_dir, output_image)
 #
-#    map_dir = "/Users/dzliu/Workspace/Mephisto/Pipeline/transFinder/images/ref"
-#    map_image = "my_ztf20aawpldl_g_001.fits"
-#    map_image = os.path.join(map_dir, map_image)
+#    #image_center = "14:05:30.00,+28:32:14.00"
+#    image_center = "23:47:36.00,+24:29:12.00"
 #
-#    image_list = match_image(input_image, output_image, map_image=map_image, refine=True, photcal_figure="zscale.png")
-
+#    t0 = time.time()
+#    image_list = resamp_image(input_image, output_image, 
+#                              image_center=image_center,)
+#    t1 = time.time()
+#    dt = t1 - t0
+#    print(f"^_^ Total {dt:.5f} seconds used")
+#    # catalog
+#    # target ra dec mu_ra mu_dec sigma_ra sigma_dec band fwhm nstar airmass ref_name ref_path

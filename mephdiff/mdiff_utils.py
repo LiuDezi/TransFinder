@@ -1,6 +1,8 @@
 # some functions to do dirty things
 
 import numpy as np
+import astropy.units as u
+from astropy.coordinates import SkyCoord, search_around_sky
 from collections import Counter
 from scipy.spatial import cKDTree as ckdt
 import os, sys
@@ -291,4 +293,49 @@ def mad(data):
     mx = np.median(abs(data-mm))
     return 1.4826*mx
 
+def find_blends(ra, dec, aperture=3.0):
+    crd1 = SkyCoord(ra, dec, unit="deg")
+    crd2 = SkyCoord(ra, dec, unit="deg")
+    idx1, idx2, sep2d, dist3d = search_around_sky(crd1, crd2, seplimit=aperture*u.arcsec)
+
+    bid = np.where(sep2d>0)[0]
+    bid1, bid2 = idx1[bid], idx2[bid]
+
+    # find the pairs
+    init_pairs = list({frozenset({bid1[ip], bid2[ip]}) for ip in range(len(bid))})
+    npair = len(init_pairs)
+    final_pairs = []
+    for j in range(npair):
+        jpair = init_pairs[j]
+        jnn = 0
+        for k in range(npair):
+            if k==j: continue
+            kpair = init_pairs[k]
+            if len(jpair & kpair)>0:
+                final_pairs += [jpair.union(kpair)]
+                jnn += 1
+        if jnn==0: final_pairs += [jpair]
+    final_pairs = list(set(final_pairs))
+
+    while len(final_pairs) != npair:
+        init_pairs = final_pairs.copy()
+        npair = len(init_pairs)
+        final_pairs = []
+        for j in range(npair):
+            jpair = init_pairs[j]
+            jnn = 0
+            for k in range(npair):
+                if k==j: continue
+                kpair = init_pairs[k]
+                if len(jpair & kpair)>0:
+                    final_pairs += [jpair.union(kpair)]
+                    jnn += 1
+            if jnn==0: final_pairs += [jpair]
+        final_pairs = list(set(final_pairs))
+
+    bid_final = []
+    for ipair in final_pairs: bid_final += list(ipair)[1:]
+    sid_final = np.delete(np.arange(len(ra)), bid_final)
+
+    return np.array(bid_final), sid_final
 
