@@ -38,64 +38,74 @@ def alienFile(fileName, path=None):
     ext = os.path.exists(fileName)
     return ext
 
-def deg2str(ra, dec, conv=0, indicator=0):
+def deg2str(ra, dec):
     """
     convert ra&dec in (degree, degree) to (hhmmss, ddmmss),
-    or (hhmmss, ddmmss) to (degree, degree)
 
     Parameters:
     ra, dec: 
        if (ra, dec) is in (deg, deg), float
-       if in (hms, dms), string
-    conv: 0 or 1
-       0: (degree, degree) to (hhmmss, ddmmss)
-       1: (hhmmss, ddmmss) to (degree, degree)
-    indicator:
-       0: +/-
-       1: P/N
+    
+    Return:
+       ra  = {0:HH:MM:SS.SS, 
+              1:HHMMSS.SS}
+       dec = {0:(+/-)DD:MM:SS.SS,
+              1:(P/N)DD:MM:SS.SS,
+              2:(+/-)DDMMSS.SS,
+              3:(P/N)DDMMSS.SS}
+    Example:
+    deg2str(1.0, 1.0, output_fmt=[0,1])
+    """
+    rah = ra/15.0
+    ram = (rah - int(rah))*60.0
+    ras = (ram - int(ram))*60.0
+
+    ra_list = [f"0{int(rah)}"[-2:], f"0{int(ram)}"[-2:], f"0{float(ras):.2f}"[-5:]]
+    sra = {0: ":".join(ra_list),
+           1: "".join(ra_list)}
+
+    decabs = abs(dec)
+    decd   = int(decabs)
+    decm   = (decabs - decd)*60.0
+    decs   = (decm - int(decm))*60.0
+    dec_list = [f"0{int(decd)}"[-2:], f"0{int(decm)}"[-2:], f"0{float(decs):.2f}"[-5:]]
+    if dec < 0.0:
+        sdec = {0: "-" + ":".join(dec_list),
+                1: "N" + ":".join(dec_list),
+                2: "-" + "".join(dec_list),
+                3: "N" + "".join(dec_list)}
+    else:
+        sdec = {0: "+" + ":".join(dec_list),
+                1: "P" + ":".join(dec_list),
+                2: "+" + "".join(dec_list),
+                3: "P" + "".join(dec_list)}
+
+    return sra, sdec
+
+def str2deg(ra, dec):
+    """
+    convert ra&dec in (hhmmss, ddmmss) to (degree, degree)
+
+    Parameters:
+    ra, dec: string in (hms, dms)
 
     Example:
-    d2hms(1.0, 1.0, conv=0)
-    d2hms(00:00:00.0, 00:00:00.0, conv=1)
+    str2deg("00:00:00.00", "+00:00:00.00")
+    str2deg("00:00:00.00", "N00:00:00.00")
     """
-    if indicator==0: predec = ["+", "-"]
-    if indicator==1: predec = ["P", "N"]
-
-    if conv==0:
-        rah = ra/15.0
-        ram = (rah - int(rah))*60.0
-        ras = (ram - int(ram))*60.0
-        
-        rah = "0%d:"%int(rah)
-        ram = "0%d:"%int(ram)
-        ras = "0%.2f"%float(ras)
-        sra = rah[-3:] + ram[-3:] + ras[-5:]
-
-        decabs = abs(dec)
-        dech   = int(decabs)
-        decm   = (decabs - dech)*60.0
-        decs   = (decm - int(decm))*60.0
-        
-        dech   = "0%d:"%int(dech)
-        decm   = "0%d:"%int(decm)
-        decs   = "0%.2f"%float(decs)
-        sdec   = dech[-3:] + decm[-3:] + decs[-5:]
-        if dec < 0.0:
-            sdec = predec[1] + sdec
-        else:
-            sdec = predec[0] + sdec
-
-    elif conv==1:
-        decSign = dec[0]
-        sra = np.array(ra.split(":"), dtype=float)
-        sdec = np.array(dec[1:].split(":"), dtype=float)
-        sra = ((sra[-1]/60.0+sra[1])/60.0 + sra[0])*15.0
-        if decSign==predec[1]:
-            sdec = -((sdec[-1]/60.0+sdec[1])/60.0 + abs(sdec[0]))
-        elif decSign==predec[0]:
-            sdec = (sdec[-1]/60.0+sdec[1])/60.0 + sdec[0]
-        else:
-            raise ValueError("!!! Give a right dec value")
+    decSign = dec[0]
+    
+    sra = np.array(ra.split(":"), dtype=float)
+    sra = ((sra[-1]/60.0+sra[1])/60.0 + sra[0])*15.0
+    
+    sdec = np.array(dec[1:].split(":"), dtype=float)
+    if decSign in ["-", "N"]:
+        sdec = -((sdec[-1]/60.0+sdec[1])/60.0 + abs(sdec[0]))
+    elif decSign in ["+", "P"]:
+        sdec = (sdec[-1]/60.0+sdec[1])/60.0 + sdec[0]
+    else:
+        raise ValueError("!!! Give a right dec value")
+    
     return sra, sdec
 
 

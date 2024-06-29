@@ -38,7 +38,8 @@ def diffimg_run(sci_image_name, sci_image_path,
                 diff_image_path, 
                 trans_cand_path, 
                 refcat_meta_path,
-                refcat_meta="reference_image_mephisto.cat"):
+                refcat_meta="reference_image_mephisto.cat",
+                trans_stamp_size=49):
     """
     Perform image differencing for a new science image
     """
@@ -131,12 +132,12 @@ def diffimg_run(sci_image_name, sci_image_path,
     print("^_^ Detect objects on the difference image")
     sex_config_file = os.path.join(path_default, "config/default_config.sex")
     sex_param_file = os.path.join(path_default, "config/default_param.sex")
-    for idet in range(2):
-        if idet==0:
-            idet_key = "difference"
+    for idetmode in [1, -1]:
+        if idetmode==1:
+            idet_key = "direct difference"
             idiff_image_abs = diff_image_abs
             fits.writeto(idiff_image_abs, diffObj.Dimg.T, header=new_meta.image_header, overwrite=True)
-        else: # idet==1
+        else: # idetmode==-1
             idet_key = "inverse difference"
             idiff_image_abs = diffinv_image_abs
             fits.writeto(idiff_image_abs, 0.0-diffObj.Dimg.T, header=new_meta.image_header, overwrite=True)
@@ -163,67 +164,66 @@ def diffimg_run(sci_image_name, sci_image_path,
         fwhm   = diffCat["FWHM_IMAGE"]
         flag   = diffCat["FLAGS"]
         snr    = diffCat["SNR_WIN"]
-        
-        # remove bogus objects
-        gid = (fwhm>=1.0) & (snr>0.0)
 
-        transReg = diff_image_abs[:-4] + "reg"
-        dutl.wds9reg(ra[gid],dec[gid],radius=5.0,unit="arcsec",color="green",outfile=transReg)
+        transReg = idiff_image_abs[:-4] + "reg"
+        dutl.wds9reg(ra,dec,radius=5.0,unit="arcsec",color="green",outfile=transReg)
 
         # extract image stamps
         #diffImgMat = fits.getdata(diff_image_abs)
         #alertCatn  = altdir + newimg[:-4] + "alert.cat"
         #alertCat   = open(alertCatn, "w")
         #alertCat.write("#id name ra dec ximg yimg mag magerr fwhm flags atEdge SNR\n")
-    #afmt = "%5d %30s %12.6f %12.6f %9.3f %9.3f %8.3f %8.3f %8.3f %2d %2d %9.3f\n"
-    #stmX = stmSize//2
-    #for i in range(nObjs):
-    #    icrd     = utl.d2hms(ra[i], dec[i], conv=0)
-    #    ialtKey  = "alert_" + "".join(icrd)
-    #    istmn    = altdir + newimg[:-4] + "%s.fits"%ialtKey
-    #    ihdr     = fits.Header()
+        #afmt = "%5d %30s %12.6f %12.6f %9.3f %9.3f %8.3f %8.3f %8.3f %2d %2d %9.3f\n"
+        #stmX = stmSize//2
+        # transient image name: MTC_JHHMMSS.SSPDDMMSS.SS.fits
+        # transient ID: JHHMMSS.SS±DDMMSS.SS
+        for iobj in range(nObjs):
+            if fwhm[iobj]<=1.0 or snr[iobj]<=0.0: continue
 
-    #    iximg, iyimg = int(round(ximg[i])), int(round(yimg[i]))
-    #    ix0, ix1 = iximg - stmX, iximg + stmX
-    #    iy0, iy1 = iyimg - stmX, iyimg + stmX
-    #    if ix0<=0    or iy0<=0: continue
-    #    if ix1>xsize or iy1>ysize: continue
-    #    if snr[i]<1.5 or snr[i]>100000.0: continue
-    
-    #    edgeX = False
-    #    if iximg<=edgeLen or iyimg<=edgeLen: edgeX = True
-    #    if iximg>xsize-edgeLen or iyimg>ysize-edgeLen: edgeX = True
+            iximg, iyimg = int(round(ximg[iobj])), int(round(yimg[iobj]))
+            ix0, ix1 = iximg - trans_stamp_size//2, iximg + trans_stamp_size//2
+            iy0, iy1 = iyimg - trans_stamp_size//2, iyimg + trans_stamp_size//2
+            if ix0<=0    or iy0<=0: continue
+            if ix1>sci_xsize or iy1>sci_xsize: continue
 
-    #    istmCut = diffImgMat[iy0-1:iy1,ix0-1:ix1].T
-    #    irefCut = refObj.image[ix0-1:ix1,iy0-1:iy1]
-    #    inewCut = newObj.image[ix0-1:ix1,iy0-1:iy1]
-    #    icut    = np.array([istmCut,inewCut,irefCut])
+            idiff_marix = diffObj.Dimg[ix0-1:ix1,iy0-1:iy1]
+            iref_matrix = ref_meta.image_matrix[ix0-1:ix1,iy0-1:iy1]
+            inew_matrix = new_meta.image_matrix[ix0-1:ix1,iy0-1:iy1]
+            icut    = np.array([iref_matrix, inew_matrix, idiff_marix], dtype=float)
 
-    #    ihdr["RA"]      = ra[i]
-    #    ihdr["DEC"]     = dec[i]
-    #    ihdr["FILE"]    = ialtKey
-    #    ihdr["XPOS"]    = iximg
-    #    ihdr["YPOS"]    = iyimg
-    #    ihdr["CANDID"]  = ialtKey
-    #    ihdr["MAG"]     = mag[i]
-    #    ihdr["MAGERR"]  = magErr[i]
-    #    ihdr["FILTER"]  = "i"
-    #    ihdr["FWHM"]    = fwhm[i]
-    #    ihdr["FWHMPSF"] = fwhm[i]
-    #    ihdr["EDGE"]    = str(edgeX)
-    #    ihdr["SNR"]     = snr[i]
+            ira_hms, idec_dms = dutl.deg2str(ra[iobj], dec[iobj])
+            itrans_id = f"J{ira_hms[1]}{idec_dms[2]}"
+            istm_name = f"MTC_J{ira_hms[1]}{idec_dms[3]}.fits"
+            istm_name_abs = os.path.join(trans_cand_path, istm_name)
+            ihdr = fits.Header()
+            ihdr["RA"]      = ra[iobj]
+            ihdr["DEC"]     = dec[iobj]
+            ihdr["FILE"]    = istm_name
+            ihdr["XPOS"]    = ximg[iobj]
+            ihdr["YPOS"]    = yimg[iobj]
+            ihdr["TRANSID"] = (itrans_id, "id of the transient candidate")
+            ihdr["MAG"]     = (mag[iobj], "auto magnitude")
+            ihdr["MAGERR"]  = (magErr[iobj], "auto magnitude error")
+            ihdr["FILTER"]  = (sci_image_band, "filter")
+            ihdr["FWHM"]    = (fwhm[iobj], "FWHM in pixels")
+            ihdr["SNR"]     = (snr[iobj], "signal-to-noise ratio")
+            ihdr["DETMODE"] = (idetmode, "detection mode: -1=inverse diff; 1=direct diff")
+            ihdr["IMGNEW"]  = (new_image_name, "new image")
+            ihdr["IMGREF"]  = (ref_image_name, "reference image")
+            ihdr["IMGDIFF"] = (diff_image_name, "difference image")
+            ihdr["DATENEW"] = (new_meta.image_header["DATE"], "observation date of new image")
+            ihdr["DATEREF"] = (ref_meta.image_header["DATE"], "observation date of reference image")
+            ihdr["TF_VERS"] = (dbase.__version__, "TransFinder version")
+            ihdr["TF_DATE"] = (dbase.__version_date__, "TransFinder version date")
+            ihdr["TF_AUTH"] = (dbase.__author__, "TransFinder author")
 
-    #    fits.writeto(istmn,icut,ihdr,overwrite=True)
+            fits.writeto(istm_name_abs,icut,ihdr,overwrite=True)
 
-    #    iline = afmt%(i+1,ialtKey,ra[i],dec[i],ximg[i],yimg[i],mag[i],magErr[i],fwhm[i],flag[i],int(edgeX),snr[i])
-    #    alertCat.write(iline)
-    #alertCat.close()
-
-    #t5  = time.time()
-    #dt5 = t5 - t4
-    #print("    Detection is done, %7.3f seconds used\n"%dt5)
-    #dt  = t5 - t0
-    #print("^_^ All Done with %7.3f seconds."%dt)
+    t5  = time.time()
+    dt5 = t5 - t4
+    print(f"    Detection is done, {dt5:.3f} seconds used")
+    dt  = t5 - t0
+    print(f"^_^ All Done with {dt:.3f} seconds.")
     return
 
 if __name__ == "__main__":
