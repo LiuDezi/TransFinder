@@ -75,8 +75,22 @@ class MaskStar(object):
         xstep, ystep = np.ogrid[:xsize, :ysize]
         for sid, ipar in saturate_param.items():
             ixcen, iycen, irad = ipar
-            idist = np.sqrt((xstep-ixcen+1.0)**2 + (ystep-iycen+1.0)**2)
-            mask += idist <= irad*self.scale
+            irad = irad * self.scale
+
+            # extract the subimage to speed up
+            irad_int = int(np.ceil(irad))
+            ixcen_int, iycen_int = int(round(ixcen-1)), int(round(iycen-1))
+            ix0, ix1 = ixcen_int-irad_int, ixcen_int+irad_int
+            iy0, iy1 = iycen_int-irad_int, iycen_int+irad_int
+            
+            ixstep_sub, iystep_sub = xstep[ix0:ix1+1,:], ystep[:,iy0:iy1+1]
+            ixcen_new, iycen_new = np.median(ixstep_sub), np.median(iystep_sub)
+            idist = np.sqrt((ixstep_sub-ixcen_new)**2 + (iystep_sub-iycen_new)**2)
+            mask[ix0:ix1+1,iy0:iy1+1] += idist <= irad
+            
+            # classical method
+            #idist = np.sqrt((xstep-ixcen+1.0)**2 + (ystep-iycen+1.0)**2)
+            #mask += idist <= irad
         self.mask = mask
         return self.mask
 
@@ -177,17 +191,23 @@ class PSFStar(object):
         IDs of the selected objects for each table
         """
         # catalog analysis
-        psf_xpos = self.__catalog["XWIN_IMAGE"]
-        psf_ypos = self.__catalog["YWIN_IMAGE"]
+        #psf_xpos = self.__catalog["XWIN_IMAGE"]
+        #psf_ypos = self.__catalog["YWIN_IMAGE"]
+        
+        sid_bright = np.argsort(self.__catalog["SNR_WIN"])[::-1]
+        psf_xpos = self.__catalog["XWIN_IMAGE"][sid_bright]
+        psf_ypos = self.__catalog["YWIN_IMAGE"][sid_bright]
 
         psf_size = int(7.0 * self.__fwhm)
         if psf_size%2==0: psf_size += 1
         psf_size = np.max([51, psf_size])
         print(f"    PSF stamp size is {psf_size}*{psf_size}")
+        
         half_size = int((psf_size-1)/2)
         kernel_interp = Gaussian2DKernel(x_stddev=5)
         nstar_psf, sid = 0, []
         for i in range(self.__nstar):
+            if nstar_psf>=500: break
             ix, iy = psf_xpos[i]-1.0, psf_ypos[i]-1.0
             ix, iy = int(round(ix)), int(round(iy))
             ix0, ix1 = ix-half_size, ix+half_size

@@ -131,6 +131,9 @@ class DiffImg(object):
         xxx, yyy = int(0.5*(xxx-1)), int(0.5*(yyy-1))
         Dpsf = Dpsf[xc-xxx:xc+xxx+1, yc-yyy:yc+yyy+1]
 
+        # re-set the mask pixels to zero
+        Dimg[self.masterMask] = 0.0
+
         self.Dimg = Dimg
         self.Dpsf = Dpsf
         return

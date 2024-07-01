@@ -39,6 +39,8 @@ def diffimg_run(sci_image_name, sci_image_path,
                 trans_cand_path, 
                 refcat_meta_path,
                 refcat_meta="reference_image_mephisto.cat",
+                survey_mode="pilot",
+                interp_badpixel=False,
                 trans_stamp_size=49):
     """
     Perform image differencing for a new science image
@@ -51,7 +53,7 @@ def diffimg_run(sci_image_name, sci_image_path,
     base_check = dbase.BaseCheck()
     swarp_comd = base_check.swarp_shell()
     sex_comd   = base_check.sextractor_shell()
-    base_check.gaia_catalog_check(sci_gaia_abs)
+    base_check.star_catalog_check(sci_gaia_abs)
     base_check.header_check(sci_image_abs)
 
     # estimate the image center
@@ -89,7 +91,11 @@ def diffimg_run(sci_image_name, sci_image_path,
     t0 = time.time()
     print("^_^ Match reference and new images")
     photcal_figure = new_image_abs[:-4] + "fluxcal.png"
-    imgout = dmatch.match_image(sci_image_abs,new_image_abs,ref_image_abs,refine=False,photcal_figure=photcal_figure)
+    imgout = dmatch.match_image(sci_image_abs,new_image_abs,ref_image_abs,
+                                survey_mode=survey_mode,
+                                interp_badpixel=interp_badpixel,
+                                refine=False,
+                                photcal_figure=photcal_figure)
     t1 = time.time()
     dt1 = t1 - t0
     print(f"^_^ Images are aligned, {dt1:7.3f} seconds used")
@@ -135,19 +141,21 @@ def diffimg_run(sci_image_name, sci_image_path,
         if idetmode==1:
             idet_key = "direct"
             idiff_image_abs = diff_image_abs
+            idiff_chkn = idiff_image_abs[:-4] + f"{idet_key}.check.fits"
             idiff_catn = idiff_image_abs[:-4] + f"{idet_key}.ldac"
             idiff_regn = idiff_image_abs[:-4] + f"{idet_key}.reg"
             fits.writeto(idiff_image_abs, diffObj.Dimg.T, header=new_meta.image_header, overwrite=True)
         else: # idetmode==-1
             idet_key = "inverse"
             idiff_image_abs = diff_image_abs[:-4] + f"{idet_key}.fits"
+            idiff_chkn = idiff_image_abs[:-4] + "check.fits"
             idiff_catn = idiff_image_abs[:-4] + "ldac"
             idiff_regn = idiff_image_abs[:-4] + "reg"
             fits.writeto(idiff_image_abs, 0.0-diffObj.Dimg.T, header=new_meta.image_header, overwrite=True)
 
         sexComd1 = f"{sex_comd} {idiff_image_abs} -c {sex_config_file} -PARAMETERS_NAME {sex_param_file} "
-        sexComd2 = f"-CATALOG_NAME {idiff_catn} -WEIGHT_TYPE NONE "
-        sexComd3 = "-DETECT_THRESH 1.5 -ANALYSIS_THRESH 1.5 -DETECT_MINAREA 3 "
+        sexComd2 = f"-CATALOG_NAME {idiff_catn} -WEIGHT_TYPE NONE -CHECKIMAGE_TYPE APERTURES -CHECKIMAGE_NAME {idiff_chkn} "
+        sexComd3 = "-DETECT_THRESH 1.5 -ANALYSIS_THRESH 1.5 -DETECT_MINAREA 5 "
         sexComd  = sexComd1 + sexComd2 + sexComd3
         subprocess.run(sexComd, shell=True)
 
@@ -174,6 +182,7 @@ def diffimg_run(sci_image_name, sci_image_path,
     snr    = diff_mcat["SNR_WIN"]
     
     # find blending objects
+    print("^_^ Clean the detected objects")
     ref_fwhm = ref_meta.image_header["REF_FWHM"]
     new_fwhm = new_meta.image_header["NEW_FWHM"]
     pixel_scale = ref_meta.image_header["REF_PS"]
@@ -187,6 +196,7 @@ def diffimg_run(sci_image_name, sci_image_path,
     dutl.wds9reg(ra,dec,radius=5.0,unit="arcsec",color="green",outfile=diff_regn)
     dutl.wds9reg(ra[blend_ids],dec[blend_ids],radius=5.0,unit="arcsec",color="red",outfile=diff_bregn)
 
+    print("^_^ Save the stamps of the transient candidates")
     # extract image stamps
     #diffImgMat = fits.getdata(diff_image_abs)
     #alertCatn  = altdir + newimg[:-4] + "alert.cat"
@@ -260,10 +270,14 @@ def diffimg_run(sci_image_name, sci_image_path,
     return
 
 if __name__ == "__main__":
-    sci_image_name = "mb_sc_tngc5466_v_20240130203739_266_sciimg.fits"
-    sci_image_path = "/Users/dzliu/Workspace/Mephisto/TransFinder/images/tarimg/ngc5466"
-    diff_image_path = "/Users/dzliu/Workspace/Mephisto/TransFinder/images/diffimg"
-    trans_cand_path = "/Users/dzliu/Workspace/Mephisto/TransFinder/images/diffimg/trans_candy"
-    refcat_meta_path = "/Users/dzliu/Workspace/Mephisto/TransFinder/images/refimg"
+    sci_image_name = "xKMTNk.20180221.003965_sciimg.fits"
+    sci_image_path = "/Users/dzliu/Workspace/Mephisto/TransFinder/images/kmtnew/sciimg"
+    diff_image_path = "/Users/dzliu/Workspace/Mephisto/TransFinder/images/kmtnew/diffimg"
+    trans_cand_path = "/Users/dzliu/Workspace/Mephisto/TransFinder/images/kmtnew/diffimg/trans_candy"
+    refcat_meta_path = "/Users/dzliu/Workspace/Mephisto/TransFinder/images/kmtnew/refimg"
+    
+    survey_mode = "regular"
 
-    diffimg_run(sci_image_name, sci_image_path, diff_image_path, trans_cand_path, refcat_meta_path)
+    diffimg_run(sci_image_name, sci_image_path, diff_image_path, trans_cand_path, refcat_meta_path, 
+                survey_mode=survey_mode,
+                interp_badpixel=False)

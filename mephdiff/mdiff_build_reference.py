@@ -10,6 +10,8 @@
 # Update history:
 # 20240610: /1) enable bad column interpolation;/
 #           /2) unify the pixel scale and image size for the resampled image;/
+# 20240630: /1) we require that the star catalog should be provided by the user
+#           /2) bad column interpolation is optional
 
 import numpy as np
 from astropy.io import fits
@@ -24,32 +26,32 @@ import matplotlib.pyplot as plt
 path_default = os.path.dirname(__file__)
 # print(f"^_^ Installed directory is: {path_default}")
 
-def resamp_image(input_image, output_image, 
+def resamp_image(input_image, input_star_catalog, output_image, 
+                 survey_mode="pilot",
                  image_center = "00:00:00,+00:00:00",
+                 interp_badpixel = True, 
                  ref_catalog  = "reference_image_mephisto.cat"):
     """
     Resample the image based on the astrometric solution in the image header
 
     Parameters:
     input_image: 
-      input FITS image with complete absolute path
+      input FITS image with absolute path
+    input_star_catalog:
+      pre-selected star catalog with absolute path
     output_image: 
-      output resampled FITS image with complete absolute path
+      output resampled FITS image with absolute path
     image_center: 
-      celestical center of the resampled image if 'map_image' is None
-    pixel_scale: 
-      pixel scale of the resampled image if 'map_image' is None
-    image_size: 
-      image size of the resampled image if 'map_image' is None
+      celestical center of the resampled image
     """
-    # gaia catalog
-    gaia_catalog = input_image[:-5] + "_sexcat_gaia.fits"
-    
+    # star catalog
+    input_star_catalog = input_image[:-5] + "_sexcat_gaia.fits"
+
     # check the completeness
     base_check = dbase.BaseCheck()
     swarp_comd = base_check.swarp_shell()
     sex_comd = base_check.sextractor_shell()
-    base_check.gaia_catalog_check(gaia_catalog)
+    base_check.star_catalog_check(input_star_catalog)
     base_check.header_check(input_image)
 
     # normalize the image by exposure time
@@ -59,30 +61,32 @@ def resamp_image(input_image, output_image,
     image_header["GAIN"] = image_header["GAIN"]*exptime
     image_header["SATURATE"] = image_header["SATURATE"]/exptime * 0.85
     image_matrix = image_matrix/exptime
+   
+    image_meta = dbase.ImageMeta(band, survey_mode=survey_mode)
+    if interp_badpixel:
+        # bad pixel mask
+        xlim_badpix, ylim_badpix = image_meta.bad_column()
+        nbadpix = len(xlim_badpix)
+        for i in range(nbadpix):
+            ix0, ix1 = xlim_badpix[i]
+            iy0, iy1 = ylim_badpix[i]
+            image_matrix[iy0:iy1+1,ix0:ix1+1] = np.nan
+        image_matrix[image_matrix<=0] = np.nan
     
-    # bad pixel mask
-    image_meta = dbase.ImageMeta(band)
-    xlim_badpix, ylim_badpix = image_meta.bad_column()
-    nbadpix = len(xlim_badpix)
-    for i in range(nbadpix):
-        ix0, ix1 = xlim_badpix[i]
-        iy0, iy1 = ylim_badpix[i]
-        image_matrix[iy0:iy1+1,ix0:ix1+1] = np.nan
-    image_matrix[image_matrix<=0] = np.nan
-    
-    # fill the background with background noise
-    gatelim = image_meta.gates_bound()
-    for igate, ibound in gatelim.items():
-        #if igate!=0: continue
-        ix0, ix1, iy0, iy1 = ibound
-        image_matrix_sub = image_matrix[iy0:iy1,ix0:ix1]
-        image_matrix_sub_masked = sigma_clip(image_matrix_sub,sigma=3,stdfunc='mad_std',masked=False)
-        imedian, imad = np.median(image_matrix_sub_masked), utl.mad(image_matrix_sub_masked)
-        idnan = np.isnan(image_matrix_sub)
-        #image_matrix_sub[idnan] = imedian
-        image_matrix_sub[idnan] = np.random.normal(imedian, imad, size=image_matrix_sub.shape)[idnan]
-        image_matrix[iy0:iy1,ix0:ix1] = image_matrix_sub
+        # fill the background with background noise
+        gatelim = image_meta.gates_bound()
+        for igate, ibound in gatelim.items():
+            #if igate!=0: continue
+            ix0, ix1, iy0, iy1 = ibound
+            image_matrix_sub = image_matrix[iy0:iy1,ix0:ix1]
+            image_matrix_sub_masked = sigma_clip(image_matrix_sub,sigma=3,stdfunc='mad_std',masked=False)
+            imedian, imad = np.median(image_matrix_sub_masked), utl.mad(image_matrix_sub_masked)
+            idnan = np.isnan(image_matrix_sub)
+            #image_matrix_sub[idnan] = imedian
+            image_matrix_sub[idnan] = np.random.normal(imedian, imad, size=image_matrix_sub.shape)[idnan]
+            image_matrix[iy0:iy1,ix0:ix1] = image_matrix_sub
 
+    # write the normalized (bad-pixel interpolated) image
     fits.writeto(output_image, image_matrix, image_header, overwrite=True)
 
     # load the default pixel scale and image size for image resampling
@@ -114,17 +118,18 @@ def resamp_image(input_image, output_image,
     utl.wds9reg(ximg, yimg, flag=None, radius=15.0, unit="pixel", color="blue", outfile=output_region)
 
     # get the star catalog with good photometric quality
-    gaiacat = fits.getdata(gaia_catalog, ext=2)
-    ra_gaia, dec_gaia = gaiacat["ra"], gaiacat["dec"]
+    starcat = fits.getdata(input_star_catalog, ext=2)
+    ra_star, dec_star = starcat["ra"], starcat["dec"]
+    #ra_star, dec_star = starcat["X_WORLD"], starcat["Y_WORLD"]
     ra_pht, dec_pht = photcat["ALPHA_J2000"], photcat["DELTA_J2000"]
     flags, snr = photcat["FLAGS"], photcat["SNR_WIN"]
     sid = (flags==0) & (snr>20) & (snr<1000)
-    pid, gid = utl.crossmatch(ra_pht[sid], dec_pht[sid], ra_gaia, dec_gaia, aperture=3.0)
+    pid, gid = utl.crossmatch(ra_pht[sid], dec_pht[sid], ra_star, dec_star, aperture=3.0)
     nstar = len(pid)
     if nstar<20: sys.exit(f"!!! At least 20 stars are required (20<SNR<1000). Only {nstar} stars are found")
     #assert nstar>20, f"!!! At least 20 stars are required (20<SNR<1000). Only {nstar} stars are found"
-    delta_ra = (ra_gaia[gid] - ra_pht[sid][pid])*np.cos(dec_gaia[gid]*np.pi/180.0)*3600.0
-    delta_dec = (dec_gaia[gid] - dec_pht[sid][pid])*3600.0
+    delta_ra = (ra_star[gid] - ra_pht[sid][pid])*np.cos(dec_star[gid]*np.pi/180.0)*3600.0
+    delta_dec = (dec_star[gid] - dec_pht[sid][pid])*3600.0
     mean_fwhm, median_fwhm, std_fwhm = sigma_clipped_stats(photcat["FWHM_IMAGE"][sid][pid], sigma=3.0, maxiters=5.0)
     mean_ra, median_ra, std_ra = sigma_clipped_stats(delta_ra, sigma=3.0, maxiters=5.0)
     mean_dec, median_dec, std_dec = sigma_clipped_stats(delta_dec, sigma=3.0, maxiters=5.0)
@@ -154,7 +159,7 @@ def resamp_image(input_image, output_image,
     image_header["REF_MDEC"] = (median_dec, "Median DEC offset of astrometry")
     image_header["REF_SRA"]  = (std_ra, "RA rms of astrometry")
     image_header["REF_SDEC"] = (std_dec, "DEC rms of astrometry")
-    image_header["REF_NS"]   = (nstar, "Number of high-quality stars in Gaia catalog")
+    image_header["REF_NS"]   = (nstar, "Number of high-quality stars")
     image_header["REF_IMG"]  = (output_image.split("/")[-1], "Reference image name")
     image_header["TF_VERS"]  = (dbase.__version__, "TransFinder version")
     image_header["TF_DATE"]  = (dbase.__version_date__, "TransFinder version date")
@@ -196,22 +201,24 @@ def photometry(input_image, sextractor_shell):
 
 #if __name__ == "__main__":
 #    import time
-#    input_dir = "/Users/dzliu/Workspace/Mephisto/Pipeline/transFinder/images/sci"
-#    #input_image = "my_sc_tngc5466_g_20230604185717_192_sciimg.fits"
-#    input_image = "my_sc_tztf20aawpldl_g_20231204124352_064_sciimg.fits"
+#    input_dir = "/Users/dzliu/Workspace/Mephisto/TransFinder/images/kmtnew/sciimg"
+#    input_image = "xKMTNt.20180221.003965_sciimg.fits"
 #    input_image = os.path.join(input_dir, input_image)
+#    input_star_catalog = "combined.gaia_ldac.fits"
+#    input_star_catalog = os.path.join(input_dir, input_star_catalog)
 #
-#    output_dir  = "/Users/dzliu/Workspace/Mephisto/Pipeline/transFinder/images/ref"
-#    #output_image = "my_ngc5466_g_001.fits"
-#    output_image = "my_ztf20aawpldl_g_001.fits"
+#    output_dir  = "/Users/dzliu/Workspace/Mephisto/TransFinder/images/kmtnew/refimg"
+#    output_image = "KMTNt.20180221.003965_sciimg.ref.fits"
 #    output_image = os.path.join(output_dir, output_image)
 #
-#    #image_center = "14:05:30.00,+28:32:14.00"
-#    image_center = "23:47:36.00,+24:29:12.00"
+#    image_center = "18:10:45.00,-30:36:20.00"
+#    survey_mode = "regular"
 #
 #    t0 = time.time()
 #    image_list = resamp_image(input_image, output_image, 
-#                              image_center=image_center,)
+#                              survey_mode=survey_mode,
+#                              image_center=image_center,
+#                              interp_badpixel=False,)
 #    t1 = time.time()
 #    dt = t1 - t0
 #    print(f"^_^ Total {dt:.5f} seconds used")

@@ -67,12 +67,12 @@ class BaseCheck(object):
         #assert mres, "!!! Input image does not contain complete wcs keywords"
         return
 
-    def gaia_catalog_check(self, catalog):
+    def star_catalog_check(self, catalog):
         """
-        check if the gaia star catalog presents
+        check if the star catalog presents
         """
-        if not os.path.exists(catalog): sys.exit("!!! No GAIA catalog provided")
-        #assert os.path.exists(catalog), "!!! No GAIA catalog provided"
+        if not os.path.exists(catalog): sys.exit("!!! No star catalog provided")
+        #assert os.path.exists(catalog), "!!! No star catalog provided"
         return
 
     def __wcs_header(self):
@@ -86,37 +86,48 @@ class BaseCheck(object):
 class ImageMeta(object):
     """
     Basic parameters for the resampled image
+
+    Parameters:
+    band: u/v/g/r/i/z
+    survey_mode: pilot or regular
     """
-    def __init__(self, band):
+    def __init__(self, band, survey_mode="pilot"):
+        if survey_mode not in ["pilot", "regular"]:
+            sys.exit("!!! Set correct survey_mode: 'pilot' or 'regular'")
         self.band = band
+        self.survey_mode = survey_mode
     
     def resample_param(self):
         """
-        Raw image parameters:
-        Blue/Yellow channels: pixel_scale=0.426, image_size=(6144,6160)
-        Red channel:          pixel_scale=0.286, image_size=(9216,9232)
+        Raw image parameters for each CCD chip:
+        1) pilot survey:
+           Blue/Yellow channels: pixel_scale=0.426, image_size=(6144,6160)
+           Red channel:          pixel_scale=0.286, image_size=(9216,9232)
+        2) regular survey:
+           Three channels: pixel_scale=0.286, image_size=(9216,9232)
         """
-        pixel_scale = 0.45
-        image_size = (5815, 5815)
+        if self.survey_mode=="pilot":
+            pixel_scale = 0.45
+            image_size = (5815, 5815)
+        else: # self.survey_mode=="regular"
+            pixel_scale = 0.30
+            image_size = (8800, 8800)
         return pixel_scale, image_size
     
-    def image_size(self):
-        if self.band in ["u", "v", "g", "r"]:
-            size = (6144, 6160)
-        else:
-            size = (9216, 9232)
-        return size
-
     def gates_bound(self):
-        xsize, ysize = self.image_size()
+        """
+        Defined on raw science image
+        """
         gates_list = {}
-        if self.band in ["u", "v", "g", "r"]:
+        if self.survey_mode=="pilot" and self.band in ["u", "v", "g", "r"]:
+            xsize, ysize = (6144, 6160)
             xmed, ymed = xsize//2, ysize//2
             gates_list[0] = [0,    xmed,     0, ymed]
             gates_list[1] = [xmed, xsize,    0, ymed]
             gates_list[2] = [xmed, xsize, ymed, ysize]
             gates_list[3] = [0,    xmed,  ymed, ysize]
         else:
+            xsize, ysize = (9216, 9232)
             ngates = 16
             xmed, ymed = xsize//8, ysize//2
             for i in range(16):
@@ -132,7 +143,8 @@ class ImageMeta(object):
 
     def bad_column(self):
         """
-        index in Pythonic style
+        Defined on raw science image
+        Index in Pythonic style
         """
         if self.band in ["u", "v"]:
             xlim = [(0,0)]
