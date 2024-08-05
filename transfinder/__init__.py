@@ -22,6 +22,5 @@ __date__ = "20240731"
 from . import imgdiff
 from . import utils
 #from . import transdet
-#from . import transcla
 
 __all__ = ["imgdiff", "utils"]
