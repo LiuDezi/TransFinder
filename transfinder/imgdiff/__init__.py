@@ -5,7 +5,7 @@
 #
 # import modules
 from .base import BaseCheck, LoadMeta, swarp_shell, sextractor_shell
-from .buildimg import build_refimg, build_newimg
+from .buildimg import image_resamp
 from .psfmodel import MaskStar, PSFStar, PSFModel
 from .diff import DiffImg
 from .transdet import ExtractTrans

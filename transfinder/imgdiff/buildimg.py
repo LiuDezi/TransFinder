@@ -13,6 +13,13 @@
 # 20240630: /1) we require that the star catalog should be provided by the user
 #           /2) bad column interpolation is optional
 
+# resample and stacking > single refimg, coadded refimg, resampled new
+# match: match with reference, photometric calibration
+# functions: ["image_resamp", "image_match"]
+# image_resamp: resampe a single exposure image. Basically, it is for new image construction.
+# image_match: for a specified new image, find the matched reference image. Basically, it is 
+#              for reference image construction.
+
 import numpy as np
 from astropy import units
 from astropy.io import fits
@@ -27,23 +34,24 @@ import subprocess
 
 from .base import BaseCheck
 from ..utils import wds9reg, crossmatch, deg2str, str2deg, sub_regions
-from ..instparam import ResampleParam
 
-def build_refimg(input_image, 
+def image_resamp(input_image,
+                 input_star_crds, 
                  output_image,
                  swarp_config_file, 
                  sex_config_file, 
                  sex_param_file,
                  swarp_exe = "swarp",
                  sex_exe = "sextractor",
-                 image_center = None,
-                 star_crds = None,
-                 survey_mode = "mephisto_pilot",
-                 interp_badpixel_mode = None,
-                 interp_badpixel_grid = (30,30),
-                 interp_badpixel_flag = None,
+                 input_weight = None, 
+                 input_flag = None,
+                 output_pixel_scale = None,
+                 output_image_size = None,
+                 output_image_center = None,
                  output_meta = None,
                  output_meta_overwrite = True,
+                 interp_badpixel_mode = "interp",
+                 interp_badpixel_grid = (30,30),
                  ):
     """
     Resample the image based on the astrometric solution in the image header
@@ -51,6 +59,8 @@ def build_refimg(input_image,
     Parameters:
     input_image: str
       input FITS image with absolute path
+    input_star_crds: list
+      input star coordinates, e.g. input_star_crds=[ra_array, dec_array]
     output_image: str
       output resampled FITS image with absolute path
     swarp_config_file: file
@@ -63,155 +73,174 @@ def build_refimg(input_image,
       executable swarp command in terminal
     sex_exe: str
       executable sextractor command in terminal
-    image_center: 
-      celestical center of output resampled image
-      If not given, automatically estimate the center based on the wcs in header
-    star_crds: list [ra_array, dec_array]
-      Celestial coordinates of reference stars [from Gaia]
-    survey_mode: str
-      currently, survey_mode should be ["mci", "mephisto", "mephisto_pilot"]
+    input_weight: str
+      same format as input_image
+    input_flag: str
+      same format as input_image, for bad pixels interpolation
+    output_pixel_scale: float
+      pixel scale of output image, e.g. output_pixel_scale = 0.3
+    output_image_size: tuple
+      image size of output image, e.g. output_image_size = (1000, 1000)
+    output_image_center: tuple
+      image celestial center of output image, 
+      e.g. output_image_center = (hh:mm:ss.ss, +dd:mm:ss.ss)
+    output_meta: str
+      meta table to store the parameters of resampled reference image
+    output_meta_oberwrite: bool
+      whether replace the meta data if it is already in the meta table
     interp_badpixel_mode: str
       see function 'interp_badpixel' for more detail
     interp_badpixel_grid: tuple
       see function 'interp_badpixel' for more detail
-    interp_badpixel_flag: array
-      see function 'interp_badpixel' for more detail
-    output_meta: str
-      meta table to store the parameters of resampled reference image
-    output_meta: bool
-      whether replace the meta data if it is already in the meta table
     """
     print("^_^ Construct reference image and corresponding catalog")
     base_check = BaseCheck()
     base_check.header_check(input_image)
 
-    # basic setup
+    # 0) basic setup
     output_catalog = output_image[:-4] + "phot.fits"
+    output_region = output_catalog[:-4] + "star.reg"
+    output_weight = output_image[:-4] + "weight.fits"
 
     print(f"    Input image: {os.path.basename(input_image)}")
     print(f"    Resampled reference image: {os.path.basename(output_image)}")
     print(f"    Resampled reference catalog: {os.path.basename(output_catalog)}")
-
-    # firstly normalize input image by exposure time
-    image_matrix, image_header = fits.getdata(input_image, header=True)
-    exptime = image_header["EXPTIME"]
-    band = image_header["FILTER"]
-    image_header["GAIN"] = image_header["GAIN"]*exptime
-    image_header["SATURATE"] = image_header["SATURATE"]/exptime * 0.85
-    image_matrix = image_matrix/exptime
     
-    # find the image center
-    if image_center is None:
-        image_wcs = wcs.WCS(image_header)
-        xsize, ysize = image_wcs.pixel_shape
-        ximg_center, yimg_center = 0.5*(xsize+1), 0.5*(ysize+1)
-        ra_center, dec_center = image_wcs.all_pix2world(ximg_center, yimg_center, 1)
-        xra_center, xdec_center  = deg2str(ra_center, dec_center)
-        image_center = f"{xra_center[0]},{xdec_center[0]}"
+    # 1) load input image matrix and header
+    image_matrix, image_header = fits.getdata(input_image, header=True)
+    image_wcs = wcs.WCS(image_header)
+    xsize, ysize = image_wcs.pixel_shape
 
-    # load the default pixel scale and image size for image resampling
-    resamp_meta = ResampleParam(survey=survey_mode)
-    pixel_scale, image_size = resamp_meta.params()
-    image_size = f"{image_size[0]},{image_size[1]}"
+    # 2) normalize input image by exposure time
+    exptime, band = image_header["EXPTIME"], image_header["FILTER"]
+    image_header["GAIN"] = image_header["GAIN"]*exptime
+    image_header["SATURATE"] = image_header["SATURATE"]/exptime * 0.90
+    image_matrix = image_matrix/exptime
 
-    print("    Resampled parameters:")
-    print(f"   1) image center: {image_center}")
-    print(f"   2) image size: {image_size}")
-    print(f"   3) image pixel scale: {pixel_scale} arcsec/pixel")
+    # 3) interpolate bad pixels
+    flag_matrix = None
+    if input_flag is not None: flag_matrix = fits.getdata(input_flag)
+    image_matrix = interp_badpixel(image_matrix, flag_map=flag_matrix,
+                                   mode=interp_badpixel_mode,
+                                   image_grid=interp_badpixel_grid)
 
-    # interpolate bad pixels
-    if interp_badpixel_mode is not None:
-        image_matrix = interp_badpixel(image_matrix, 
-                                       flag_map=interp_badpixel_flag, 
-                                       mode=interp_badpixel_mode, 
-                                       image_grid=interp_badpixel_grid)
-
-    # save the normalized (and bad-pixel interpolated) image
+    # 4) save the normalized (and bad-pixel interpolated) image
     fits.writeto(output_image, image_matrix, image_header, overwrite=True)
 
-    # run swarp
-    output_weight = output_image[:-4] + "weight.fits"
-    swarp_run1 = f"{swarp_exe} {output_image} -c {swarp_config_file} "
-    swarp_run2 = f"-IMAGEOUT_NAME {output_image} -WEIGHTOUT_NAME {output_weight} "
-    swarp_run3 = f"-CENTER {image_center}  -PIXEL_SCALE {pixel_scale} -IMAGE_SIZE {image_size}"
-    swarp_run  = swarp_run1 + swarp_run2 + swarp_run3
+    # 5) swarp configuration
+    swarp_mpar = f"{swarp_exe} {output_image} -c {swarp_config_file} -IMAGEOUT_NAME {output_image} "
+    if input_weight is not None:
+        swarp_wpar = f"-WEIGHT_TYPE MAP_WEIGHT -WEIGHT_IMAGE {input_weight} -WEIGHTOUT_NAME {output_weight} "
+    else:
+        swarp_wpar = f"-WEIGHT_TYPE NONE -WEIGHTOUT_NAME {output_weight} "
+    if output_image_center is None:
+        ximg_center, yimg_center = 0.5*(xsize+1), 0.5*(ysize+1)
+        ra_center, dec_center = image_wcs.all_pix2world(ximg_center, yimg_center, 1)
+        ra_center, dec_center = ra_center.tolist(), dec_center.tolist()
+        sra_center, sdec_center = deg2str(ra_center, dec_center)
+        output_image_center = (sra_center[0], sdec_center[0])
+    if output_pixel_scale is None:
+        pixel_scale = np.mean([ips.value*3600.0 for ips in image_wcs.proj_plane_pixel_scales()])
+        output_pixel_scale = float(f"{pixel_scale:.2f}")
+    if output_image_size is None:
+        output_image_size = (xsize, ysize)
+    
+    simage_center = f"{output_image_center[0]},{output_image_center[1]}"
+    simage_size = f"{output_image_size[0]},{output_image_size[1]}"
+    swarp_rpar = f"-CENTER {simage_center} -PIXEL_SCALE {output_pixel_scale} -IMAGE_SIZE {simage_size} "
+    
+    print("    Resampled parameters:")
+    print(f"   1) image center: {output_image_center}")
+    print(f"   2) image size: {output_image_size}")
+    print(f"   3) image pixel scale: {output_pixel_scale} arcsec/pixel")
+
+    # 6) run swarp and perform photometry
+    swarp_run  = swarp_mpar + swarp_wpar + swarp_rpar
     subprocess.run(swarp_run, shell=True)
+    photometry(output_image, output_weight, output_catalog, sex_exe, sex_config_file, sex_param_file)
     os.remove(output_weight)
 
-    # perform photometry
-    photometry(output_image, output_catalog, sex_exe, sex_config_file, sex_param_file)
-
-    # get the star catalog with good photometric quality
+    # 7) load star catalog with good photometric quality
     photcat = Table.read(output_catalog, format="fits", hdu=2)
     nobj = len(photcat)
     ra, dec = photcat["ALPHA_J2000"], photcat["DELTA_J2000"]
     flags, snr, fwhm = photcat["FLAGS"], photcat["SNR_WIN"], photcat["FWHM_IMAGE"]
     sid = (flags==0) & (snr>20) & (snr<1000) & (fwhm>0.0)
     
-    rab_full = np.zeros(nobj) - 99.0
-    decb_full = np.zeros(nobj) - 99.0
-    median_ra, median_dec, std_ra, std_dec = -99.0, -99.0, -99.0, -99.0
-    if star_crds is not None:
-        rab, decb = star_crds
-        pid, gid = crossmatch(ra[sid], dec[sid], rab, decb, aperture=3.0)
-        nstar = len(pid)
-        if nstar<20: sys.exit(f"!!! At least 20 stars are required (20<SNR<1000). Only {nstar} stars are found")
-    
-        # dirty indices
-        sid = np.where(sid==True)[0][pid]
+    rab, decb = input_star_crds
+    pid, gid = crossmatch(ra[sid], dec[sid], rab, decb, aperture=3.0)
+    nstar = len(pid)
+    if nstar<20: sys.exit(f"!!! At least 20 stars are required (20<SNR<1000). Only {nstar} stars are found")
+    sid = np.where(sid==True)[0][pid]
 
-        # image quality
-        delta_ra = (rab[gid] - ra[sid])*np.cos(decb[gid]*np.pi/180.0)*3600.0
-        delta_dec = (decb[gid] - dec[sid])*3600.0
-        mean_ra, median_ra, std_ra = sigma_clipped_stats(delta_ra, sigma=3.0, maxiters=5.0)
-        mean_dec, median_dec, std_dec = sigma_clipped_stats(delta_dec, sigma=3.0, maxiters=5.0)
+    delta_ra = (rab[gid] - ra[sid])*np.cos(decb[gid]*np.pi/180.0)*3600.0
+    delta_dec = (decb[gid] - dec[sid])*3600.0
+    mean_ra, median_ra, std_ra = sigma_clipped_stats(delta_ra, sigma=3.0, maxiters=5.0)
+    mean_dec, median_dec, std_dec = sigma_clipped_stats(delta_dec, sigma=3.0, maxiters=5.0)
 
-        rab_full[sid] = rab[gid]
-        decb_full[sid] = decb[gid]
-    else:
-        nstar = len(sid)
-        if nstar<20: sys.exit(f"!!! At least 20 stars are required (20<SNR<1000). Only {nstar} stars are found")
-        
-        rab_full[sid] = ra[sid]
-        decb_full[sid] = dec[sid]
-
-    # update the catalog
+    # 8) update the catalog
+    rab_full, decb_full = np.zeros(nobj) - 99.0, np.zeros(nobj) - 99.0
+    rab_full[sid], decb_full[sid] = rab[gid], decb[gid]
     photcat.add_columns([rab_full, decb_full], names=["RA_BASE", "DEC_BASE"])
     photcat.write(output_catalog, format="fits", overwrite=True)
-    output_star_region  = output_catalog[:-4] + "star.reg"
-    wds9reg(ra[sid], dec[sid], radius=5.0, unit="arcsec", color="red", outfile=output_star_region)
+    wds9reg(ra[sid], dec[sid], radius=5.0, unit="arcsec", color="red", outfile=output_region)
 
-    # update image header
+    # 9) update image header
     image_matrix, image_header = fits.getdata(output_image, header=True)
-    sigbkg = mad_std(image_matrix, ignore_nan=True)
+    std_bkg = mad_std(image_matrix, ignore_nan=True)
     mean_fwhm, median_fwhm, std_fwhm = sigma_clipped_stats(fwhm[sid], sigma=3.0, maxiters=5.0)
     
-    xra_center, xdec_center = image_center.split(",")
-    ra_center, dec_center = str2deg(xra_center, xdec_center)
+    image_wcs = wcs.WCS(image_header)
+    xsize, ysize = image_wcs.pixel_shape
+    ximg_center, yimg_center = 0.5*(xsize+1), 0.5*(ysize+1)
+    ra_center, dec_center = image_wcs.all_pix2world(ximg_center, yimg_center, 1)
+    ra_min, dec_min = image_wcs.all_pix2world(0.5, 0.5, 1)
+    ra_max, dec_max = image_wcs.all_pix2world(xsize+0.5, ysize+0.5, 1)
+    ra_center, dec_center = ra_center.tolist(), dec_center.tolist()
+    ra_min, dec_min = ra_min.tolist(), dec_min.tolist()
+    ra_max, dec_max = ra_max.tolist(), dec_max.tolist()
+    if ra_min>ra_max: ra_min, ra_max = ra_max, ra_min
+    if dec_min>dec_max: dec_min, dec_max = dec_max, dec_min
+    sra_center, sdec_center = output_image_center
 
-    image_header["BKGSIG"] = (sigbkg, "background sigma")
-    image_header["RA0"]   = (ra_center, "RA of image center [deg]")
-    image_header["DEC0"]  = (dec_center, "DEC of image center [deg]")
-    image_header["SRA0"]  = (xra_center, "RA of image center [hhmmss]")
-    image_header["SDEC0"] = (xdec_center, "DEC of image center [ddmmss]")
-    image_header["PSCALE"] = (pixel_scale, "Image pixel scale [arcsec/pixel]")
-    image_header["PIXUN"] = ("adu/s", "Pixel unit")
-    image_header["FWHM"] = (median_fwhm, "Image median FWHM [pixel]")
-    image_header["RABIAS"] = (median_ra, "Median RA offset of astrometry")
+    oimage_name = os.path.basename(output_image)
+    oimage_path = os.path.dirname(output_image)
+
+    image_header["BKGSIG"]  = (std_bkg, "background sigma")
+    image_header["RA0"]     = (ra_center, "RA of image center [deg]")
+    image_header["DEC0"]    = (dec_center, "DEC of image center [deg]")
+    image_header["SRA0"]    = (sra_center, "RA of image center [hhmmss]")
+    image_header["SDEC0"]   = (sdec_center, "DEC of image center [ddmmss]")
+    image_header["PSCALE"]  = (output_pixel_scale, "Image pixel scale [arcsec/pixel]")
+    image_header["PIXUN"]   = ("adu/s", "Pixel unit")
+    image_header["FWHM"]    = (median_fwhm, "Image median FWHM [pixel]")
+    image_header["RABIAS"]  = (median_ra, "Median RA offset of astrometry")
     image_header["DECBIAS"] = (median_dec, "Median DEC offset of astrometry")
-    image_header["RASTD"] = (std_ra, "RA rms of astrometry")
-    image_header["DECSTD"] = (std_dec, "DEC rms of astrometry")
-    image_header["NSTAR"] = (nstar, "Number of high-quality stars")
-    image_header["REFIMG"] = (os.path.basename(output_image), "Reference image")
-    #image_header["TF_VERS"]  = (dbase.__version__, "TransFinder version")
-    #image_header["TF_DATE"]  = (dbase.__version_date__, "TransFinder version date")
-    #image_header["TF_AUTH"]  = (dbase.__author__, "TransFinder author")
-
+    image_header["RASTD"]   = (std_ra, "RA rms of astrometry")
+    image_header["DECSTD"]  = (std_dec, "DEC rms of astrometry")
+    image_header["NSTAR"]   = (nstar, "Number of high-quality stars")
+    image_header["REFIMG"]  = (oimage_name, "Image name")
     fits.writeto(output_image, image_matrix.astype(np.float32), image_header, overwrite=True)
     
-    # save the reference meta table
+    # save meta table
     if output_meta is not None:
-        refimg_meta_update(output_image, output_meta, overwrite=output_meta_overwrite)
+        meta_table = meta_table_iter(output_meta)
+        update_row = [oimage_name, ra_center, dec_center, median_ra, median_dec,
+                      std_ra, std_dec, ra_min, ra_max, dec_min, dec_max,
+                      band, median_fwhm, nstar, std_bkg, oimage_path]
+        if oimage_name in meta_table["image_name"]:
+            if output_meta_overwrite:
+                idx = np.where(meta_table["image_name"]==oimage_name)[0][0]
+                meta_table.remove_row(idx)
+                print(f"!!! Image {oimage_name} is already in the meta table: It is overwritten.")
+                meta_table.add_row(update_row)
+            else:
+                print(f"!!! Image {oimage_name} is already in the meta table: Nothing to do.")
+        else:
+            meta_table.add_row(update_row)
+
+        # save the table
+        meta_table.write(output_meta, format="fits", overwrite=True)
     
     return
 
@@ -456,27 +485,31 @@ def build_newimg(input_image,
 
     return
 
-def refimg_meta_update(refimg, refimg_meta, overwrite=True):
+def meta_table_iter(image_meta):
     """
-    build/update reference image meta information
+    build/update image meta information
 
-    refimg: list
-        reference image name
+    image_meta: str
+        meta table name
     """
     # open the table
-    if not os.path.exists(refimg_meta):
-        meta = {"ref_image": ["U80",  None,         "reference image"],
-                "ra":        ["f8",   units.deg,    "central ra"],
-                "dec":       ["f8",   units.deg,    "central dec"],
-                "mu_ra":     ["f8",   units.arcsec, "ra astrometric offset"],
-                "mu_dec":    ["f8",   units.arcsec, "dec astrometric offset"],
-                "std_ra":    ["f8",   units.arcsec, "ra astrometric std"],
-                "std_dec":   ["f8",   units.arcsec, "dec astrometric std"],
-                "band":      ["U5",   None,         "band/filter"],
-                "fwhm":      ["f4",   units.pixel,  "median FWHM"],
-                "nstar":     ["i8",   None,         "number of high-snr stars"],
-                "std_bkg":   ["f4",   None,         "background std"],
-                "ref_path":  ["U100", None,         "path of reference image"]}
+    if not os.path.exists(image_meta):
+        meta = {"image_name": ["U80",  None,         "image name"],
+                "ra":         ["f8",   units.deg,    "central ra"],
+                "dec":        ["f8",   units.deg,    "central dec"],
+                "mu_ra":      ["f8",   units.arcsec, "ra astrometric offset"],
+                "mu_dec":     ["f8",   units.arcsec, "dec astrometric offset"],
+                "std_ra":     ["f8",   units.arcsec, "ra astrometric std"],
+                "std_dec":    ["f8",   units.arcsec, "dec astrometric std"],
+                "ra_min":     ["f8",   units.deg,    "minimum ra"],
+                "ra_max":     ["f8",   units.deg,    "maximum ra"],
+                "dec_min":    ["f8",   units.deg,    "minimum dec"],
+                "dec_max":    ["f8",   units.deg,    "maximum dec"],
+                "band":       ["U5",   None,         "band/filter"],
+                "fwhm":       ["f4",   units.pixel,  "median FWHM"],
+                "nstar":      ["i8",   None,         "number of high-snr stars"],
+                "std_bkg":    ["f4",   None,         "background std"],
+                "image_path":   ["U100", None,       "image path"]}
         colList = []
         for ikey, ival in meta.items():
             idtype, iunit, icom = ival
@@ -485,45 +518,11 @@ def refimg_meta_update(refimg, refimg_meta, overwrite=True):
             else:
                 icol = Column([], name=ikey, unit=iunit, description=icom, dtype=idtype,)
             colList += [icol]
-        refimg_meta_tab = Table(colList)
+        image_meta_tab = Table(colList)
     else:
-        refimg_meta_tab = Table.read(refimg_meta, format="fits")
-
-    # write metadata into table
-    if isinstance(refimg, str): refimg = [refimg]
-    nimg = len(refimg)
-    for i in range(nimg):
-        irefimg = refimg[i]
-        irefimg_name = os.path.basename(irefimg)
-        irefimg_path = os.path.dirname(irefimg)
-        
-        if irefimg_name in refimg_meta_tab["ref_image"]:
-            if overwrite:
-                idx = np.where(refimg_meta_tab["ref_image"]==irefimg_name)[0][0]
-                refimg_meta_tab.remove_row(idx)
-                print(f"!!! Image {irefimg_name} is already in the meta table: It is overwritten.")
-            else:
-                print(f"!!! Image {irefimg_name} is already in the meta table: Nothing to do.")
-                continue
-
-        irefimg_header = fits.getheader(irefimg)
-        ira = irefimg_header["RA0"]
-        idec = irefimg_header["DEC0"]
-        imu_ra = irefimg_header["RABIAS"]
-        imu_dec = irefimg_header["DECBIAS"]
-        istd_ra = irefimg_header["RASTD"]
-        istd_dec = irefimg_header["DECSTD"]
-        iband = irefimg_header["FILTER"]
-        ifwhm = irefimg_header["FWHM"]
-        instar = irefimg_header["NSTAR"]
-        istd_bkg = irefimg_header["BKGSIG"]
-        
-        inew_row = [irefimg_name,ira,idec,imu_ra,imu_dec,istd_ra,istd_dec,iband,ifwhm,instar,istd_bkg,irefimg_path]
-        refimg_meta_tab.add_row(inew_row)
+        image_meta_tab = Table.read(image_meta, format="fits")
     
-    # save the table
-    refimg_meta_tab.write(refimg_meta, format="fits", overwrite=True)
-    return
+    return image_meta_tab
 
 def interp_badpixel(image_matrix, flag_map=None, mode="random", image_grid=(20,20)):
     """
@@ -587,8 +586,8 @@ def interp_badpixel(image_matrix, flag_map=None, mode="random", image_grid=(20,2
             image_matrix[ix0:ix1,iy0:iy1] = isub_image
     return image_matrix
 
-def photometry(input_image, output_catalog, sex_exe, sex_config_file, sex_param_file):
-    sex_run1 = f"{sex_exe} {input_image} -c {sex_config_file} "
+def photometry(input_image, input_weight, output_catalog, sex_exe, sex_config_file, sex_param_file):
+    sex_run1 = f"{sex_exe} {input_image} -c {sex_config_file} -WEIGHT_IMAGE {input_weight} "
     sex_run2 = f"-CATALOG_NAME {output_catalog} -PARAMETERS_NAME {sex_param_file}"
     sex_run = sex_run1 + sex_run2
     #print(f"^_^ {sex_run}")
