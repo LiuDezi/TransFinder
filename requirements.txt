@@ -1,0 +1,6 @@
+numpy>=1.26
+scipy>=1.12
+galsim>=2.5
+astropy>=6.1
+photutils>=1.13
+matplotlib>=3.8
