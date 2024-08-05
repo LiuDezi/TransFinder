@@ -16,7 +16,9 @@ For this module, we provide several functions:
 * detection of transient candidates on the difference images.
 
 ### (2) real/bogus classification
-For this module, we implement a ResNet deep learning network based on Pytorch. Users can provide their own data generated from the image differencing module (image stamps of real and bogus transients) to train the network. Once the network is trained, the parameters can be used as input for transient detections.
+For this module, we implement a ResNet deep learning network based on Pytorch. Users can provide their own data (image stamps of real and bogus transients) generated either by the image differencing module or other codes to train the network. 
+
+Once the network is trained, the parameters can be used as input for transient detections.
 
 Pipeline History:
 ===================
