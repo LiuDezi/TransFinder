@@ -3,7 +3,7 @@
 A transient detection pipeline developed for large imaging surveys. This pipeline is currently developed for Mephisto and CSST/MCI surveys, but I am trying to generalize it for other surveys.
 
 ## There are two modules in the pipeline: 
-### (1) image differencing. 
+### (1) image differencing
 For this module, we provide several functions: 
 * reference image construction using pro-processed single exposure images; 
 
