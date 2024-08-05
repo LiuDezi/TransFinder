@@ -1,20 +1,12 @@
-# TransFinder
+# TransFinder (still under heavy development)
 
-* Currently, the pipeline is still under heavy development.
+A transient detection pipeline developed for large imaging surveys. This pipeline is currently developed for Mephisto and CSST/MCI surveys, but I am trying to generilize it for other surveys.
 
-A transient detection pipeline developed for imaging surveys. Although this pipeline is currently developed for Mephisto and CSST/MCI surveys, it is expected to be applicable to other surveys as well after minor modification.
-
-There are three parts in the pipeline: 
-* reference image construction
-* target image subtraction
+## There are three modules in the pipeline: 
+* image differencing based on ZOGY algorithm ([Zackay et al. 2016](https://ui.adsabs.harvard.edu/abs/2016ApJ...830...27Z/abstract)). For this module, we provide several functions: 1) reference image construction using pro-processed single exposure images; 2) new image construction through matching with the reference image; 3) Spatially variaed PSF modeling for both reference and new images; 4) image differencing in Fourier space based on revised ZOGY algorithm.
 * real/bogus classification
-* transient classification
+* image silumation
 
-Basic steps:
-1) construct reference image. The final products include: reference image, reference catalog, star catalog;
-2) align new image to the reference image. The final products include: aligned new image, new_image catalog, new_image star catalog;
-3) construct spatially varied PSF models for both reference and new images;
-4) perform image subtraction based on ZOGY algorithm ([Zackay et al. 2016](https://ui.adsabs.harvard.edu/abs/2016ApJ...830...27Z/abstract));
 
 
 Pipeline History:
