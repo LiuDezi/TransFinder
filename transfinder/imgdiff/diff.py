@@ -161,7 +161,7 @@ class DiffImg(object):
             diff_matrix = diff_matrix[x0:x1, y0:y1] * mean_sigma
         else:
             extend_size = psize//2
-            crd_grids = sub_regions(xsize, ysize, image_grid=self.degrid, extend=(extend_size,extend_size))
+            crd_grids = sub_regions(xsize, ysize, grids=self.degrid, extend=(extend_size,extend_size))
             ngrid = len(crd_grids)
             
             diff_matrix = np.zeros((xsize, ysize))

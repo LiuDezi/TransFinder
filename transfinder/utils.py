@@ -271,11 +271,11 @@ def poly_index(ndeg):
             index_list.append((i,j))
     return index_list
 
-def sub_regions(xsize, ysize, image_grid=(20, 20), extend=(0, 0)):
+def sub_regions(xsize, ysize, grids=(20, 20), extend=(0, 0)):
     """
     divide entire image into sub-regions
     """
-    xgrid, ygrid = image_grid
+    xgrid, ygrid = grids
     dx, dy = xsize/xgrid, ysize/ygrid
     ex, ey = extend
     crd_grids, iid = {}, 0

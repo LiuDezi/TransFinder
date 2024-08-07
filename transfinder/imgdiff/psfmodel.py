@@ -432,8 +432,8 @@ class PSFModel(object):
         
         poly_coeffs, poly_coeffs_unc = self.poly_fit(psf_star_meta)
         xgrid, ygrid = self.__interp_grid()
-        xgrid = xgrid/self.xsize - 0.5
-        ygrid = ygrid/self.ysize - 0.5
+        xgrid = (xgrid+0.5)/self.xsize - 0.5
+        ygrid = (ygrid+0.5)/self.ysize - 0.5
         
         field_list = []
         for i in range(self.psf_nbasis):
@@ -516,8 +516,8 @@ class PSFModel(object):
         """
         The scipy 'curve_fit' is used to find the best-fitting polynomial coefficients.
         """
-        xpos = psf_star_meta.psf_xpos/self.xsize - 0.5
-        ypos = psf_star_meta.psf_ypos/self.ysize - 0.5
+        xpos = (psf_star_meta.psf_xpos+0.5)/self.xsize - 0.5
+        ypos = (psf_star_meta.psf_ypos+0.5)/self.ysize - 0.5
 
         crd_matrix = np.zeros((self.poly_ncoeff, psf_star_meta.psf_nstar))
         for i in range(self.poly_ncoeff):
