@@ -84,3 +84,43 @@ class InitMetaTable(object):
                 "diff_cutout":   [mat_dtype,  None,     "difference image name"],
                 }
         return meta
+
+#def meta_table_iter(image_meta):
+#    """
+#    build/update reference image meta information
+#
+#    image_meta: str
+#        meta table name
+#    """
+#    # open the table
+#    if not os.path.exists(image_meta):
+#        meta = {"image_name": ["U80",  None,         "image name"],
+#                "ra":         ["f8",   units.deg,    "central ra"],
+#                "dec":        ["f8",   units.deg,    "central dec"],
+#                "mu_ra":      ["f8",   units.arcsec, "ra astrometric offset"],
+#                "mu_dec":     ["f8",   units.arcsec, "dec astrometric offset"],
+#                "std_ra":     ["f8",   units.arcsec, "ra astrometric std"],
+#                "std_dec":    ["f8",   units.arcsec, "dec astrometric std"],
+#                "ra_min":     ["f8",   units.deg,    "minimum ra"],
+#                "ra_max":     ["f8",   units.deg,    "maximum ra"],
+#                "dec_min":    ["f8",   units.deg,    "minimum dec"],
+#                "dec_max":    ["f8",   units.deg,    "maximum dec"],
+#                "band":       ["U5",   None,         "band/filter"],
+#                "fwhm":       ["f4",   units.pixel,  "median FWHM"],
+#                "nstar":      ["i8",   None,         "number of high-snr stars"],
+#                "std_bkg":    ["f4",   None,         "background std"],
+#                "image_path":   ["U100", None,       "image path"]}
+#        colList = []
+#        for ikey, ival in meta.items():
+#            idtype, iunit, icom = ival
+#            if iunit==None:
+#                icol = Column([], name=ikey, description=icom, dtype=idtype,)
+#            else:
+#                icol = Column([], name=ikey, unit=iunit, description=icom, dtype=idtype,)
+#            colList += [icol]
+#        image_meta_tab = Table(colList)
+#    else:
+#        image_meta_tab = Table.read(image_meta, format="fits")
+#
+#    return image_meta_tab
+

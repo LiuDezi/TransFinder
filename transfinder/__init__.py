@@ -15,12 +15,12 @@ Modified-History:
 #
 
 # TransFinder pipeline information
-__version__ = "1.2.0"
-__date__ = "20240731"
+__version__ = "1.5.0"
+__date__ = "20240807"
 
 # import modules
 from . import imgdiff
-from . import utils
+#from . import utils
 #from . import transdet
 
 __all__ = ["imgdiff", "utils"]

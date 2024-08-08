@@ -1,4 +1,4 @@
-# This routine is used to build reference/target images for image differencing
+# This routine is used to build reference/new images for image differencing
 # NOTE: there are several assumptions for all input images:
 # 1) images are pre-processed, including bias/dark correction, flat-fielding, 
 #    astrometric calibration, and photometric homogenization. 
@@ -16,9 +16,8 @@
 
 import numpy as np
 from scipy import optimize
-from astropy import units
 from astropy.io import fits
-from astropy.table import Table, Column
+from astropy.table import Table
 from astropy.wcs import wcs
 from astropy.stats import sigma_clip, sigma_clipped_stats, mad_std
 from astropy.convolution import Gaussian2DKernel, interpolate_replace_nans
@@ -32,12 +31,21 @@ from ..utils import wds9reg, crossmatch, deg2str, str2deg, sub_regions, poly_ind
 
 class BuildImage(object):
     """
-    Build reference/target images.
+    Build resampled reference/new images.
 
-    To do this, the following steps should be used:
-    1) build resampled target image
-    2) find initial reference image
-    3) match initial reference image to resampled target image
+    User should provide two input images: a reference image and a new image. 
+    Generally, the two images should have the same observed filter and similar 
+    sky coverage. But their exposure time, celestial centers, and other 
+    geometric parameters can be different. This routine will resample the two 
+    images so that they will have exactly the same sky coverage and image size 
+    (either specified by the user or estimated from the new image), and perform 
+    relative photometric calibration.
+
+    Reference/new image should be built by following below steps:
+    1) build resampled new image
+    2) align reference image to the resample new image
+    3) match the relative flux scale of new to reference
+    4) save the images and corresponding catalog
 
     NOTE: SExtractor and SWarp should be installed for photometry and image resampling
     
@@ -52,15 +60,15 @@ class BuildImage(object):
       executable swarp command in terminal
     sextractor_exe: str
       executable sextractor command in terminal
-    interp_grids: tuple
-      see function 'interp_badpixel' for more detail
-    output_pixel_scale: float
+    resamp_pixel_scale: float
       pixel scale of output image, e.g. output_pixel_scale = 0.3
-    output_image_size: tuple
+    resamp_image_size: tuple
       image size of output image, e.g. output_image_size = (1000, 1000)
-    output_image_center: tuple
+    resamp_image_center: tuple
       image celestial center of output image, 
       e.g. output_image_center = (hh:mm:ss.ss, +dd:mm:ss.ss)
+    interp_grids: tuple
+      see function 'interp_badpixel' for more detail
     """
     def __init__(self,
         swarp_config_file, 
@@ -104,7 +112,7 @@ class BuildImage(object):
 
     def sextractor_runner(self, input_image, input_weight, output_catalog):
         """
-        sextractor command. Other parameters are fixed in the configiration file
+        sextractor command. Other parameters are fixed in the configuration file
         """
         sextractor_cmd1 = f"{self.sextractor_exe} {input_image} -c {self.sextractor_config_file} "
         sextractor_cmd2 = f"-CATALOG_NAME {output_catalog} -PARAMETERS_NAME {self.sextractor_param_file} "
@@ -114,7 +122,7 @@ class BuildImage(object):
 
     def swarp_runner(self, input_image, input_weight, output_image, output_weight):
         """
-        swarp command. Other parameters are fixed in the configiration file
+        swarp command. Other parameters are fixed in the configuration file
         """
         resamp_center = f"{self.resamp_image_center[0]},{self.resamp_image_center[1]}"
         resamp_size = f"{self.resamp_image_size[0]},{self.resamp_image_size[1]}"
@@ -137,7 +145,7 @@ class BuildImage(object):
         Parameters:
         input_image: str
           input FITS image with absolute path
-        input_star_crds: list
+        input_star_positions: list
           input star coordinates, e.g. input_star_crds=[ra_array, dec_array]
         output_image: str
           output resampled FITS image with absolute path
@@ -149,7 +157,6 @@ class BuildImage(object):
         Return:
         resampled image and corresponding photometric catalog
         """
-        print("^_^ Build resampled image and corresponding catalog")
         base_check = BaseCheck()
         base_check.header_check(input_image)
 
@@ -170,7 +177,7 @@ class BuildImage(object):
         if input_flag is not None: flag_matrix = fits.getdata(input_flag)
         image_matrix = self.interp_badpixel(image_matrix, flag_map=flag_matrix, grids=self.interp_grids)
 
-        # 3) save he bad-pixel interpolated image
+        # 3) save the bad-pixel interpolated image
         fits.writeto(output_image, image_matrix, image_header, overwrite=True)
 
         # 4) update resample parameters
@@ -205,14 +212,14 @@ class BuildImage(object):
         mean_ra, median_ra, std_ra = sigma_clipped_stats(delta_ra, sigma=3.0, maxiters=5.0)
         mean_dec, median_dec, std_dec = sigma_clipped_stats(delta_dec, sigma=3.0, maxiters=5.0)
 
-        # 8) update the catalog
+        # 7) update the catalog
         rab_full, decb_full = np.zeros(nobj) - 99.0, np.zeros(nobj) - 99.0
         rab_full[sid], decb_full[sid] = rab[gid], decb[gid]
         phot_matrix.add_columns([rab_full, decb_full], names=["RA_BASE", "DEC_BASE"])
         phot_matrix.write(output_catalog, format="fits", overwrite=True)
         wds9reg(ra[sid], dec[sid], radius=5.0, unit="arcsec", color="red", outfile=output_region)
 
-        # 9) update image header
+        # 8) update image header
         image_matrix, image_header = fits.getdata(output_image, header=True)
         std_bkg = mad_std(image_matrix, ignore_nan=True)
         mean_fwhm, median_fwhm, std_fwhm = sigma_clipped_stats(fwhm[sid], sigma=3.0, maxiters=5.0)
@@ -254,40 +261,48 @@ class BuildImage(object):
         image_matrix = image_matrix.astype(np.float32)
         fits.writeto(output_image, image_matrix, image_header, overwrite=True)
     
-        return image_matrix, image_header, phot_matrix
+        return output_image, output_catalog, image_matrix, image_header, phot_matrix
 
-    def phot_match(self, tar_meta, ref_meta, method="constant_median", poly_degree=3, photcal_figure=None):
+    def phot_match(self, new_meta, ref_meta, method="median", poly_degree=3, photcal_figure=None):
         """
         photometric calibration
 
         Parameters:
+        new_meta: tuple
+          meta data of new image generated by function 'image_resamp'
+        ref_meta: tuple
+          meta data of ref image generated by function 'image_resamp'
         method: str
           median: sigma-clipped median
           weighted: weighted mean
           fit: polynomial 2D model derived by chi square minimization
+        poly_degree: int
+          if method=fit, this is the degree of a 2D polynomial.
+        photcal_figure: str
+          save comparison figure of final calibrated fluxes of new and ref.
         """
-        tar_matrix, tar_header, tar_phot = tar_meta
-        ref_matrix, ref_header, ref_phot = ref_meta
+        new_image, new_catalog, new_matrix, new_header, new_phot = new_meta
+        ref_image, ref_catalog, ref_matrix, ref_header, ref_phot = ref_meta
         
-        tar_pid = (tar_phot["RA_BASE"]!=-99.0) & (tar_phot["DEC_BASE"]!=-99.0)
+        new_pid = (new_phot["RA_BASE"]!=-99.0) & (new_phot["DEC_BASE"]!=-99.0)
         ref_pid = (ref_phot["RA_BASE"]!=-99.0) & (ref_phot["DEC_BASE"]!=-99.0)
         
         # find common stars
-        tar_ra, tar_dec = tar_phot["RA_BASE"][tar_pid], tar_phot["DEC_BASE"][tar_pid]
+        new_ra, new_dec = new_phot["RA_BASE"][new_pid], new_phot["DEC_BASE"][new_pid]
         ref_ra, ref_dec = ref_phot["RA_BASE"][ref_pid], ref_phot["DEC_BASE"][ref_pid]
 
-        tid, rid = crossmatch(tar_ra, tar_dec, ref_ra, ref_dec, aperture=3.0)
+        tid, rid = crossmatch(new_ra, new_dec, ref_ra, ref_dec, aperture=3.0)
         nstar = len(tid)
         if nstar<200 and method=="fit":
             print(f"!!! Only {nstar} stars for relative photometric calibration.")
             method = "weighted"
             print(f"!!! 'method={method}' will be used instead.")
          
-        tar_flux, tar_eflux = tar_phot["FLUX_AUTO"][tar_pid][tid], tar_phot["FLUXERR_AUTO"][tar_pid][tid]
+        new_flux, new_eflux = new_phot["FLUX_AUTO"][new_pid][tid], new_phot["FLUXERR_AUTO"][new_pid][tid]
         ref_flux, ref_eflux = ref_phot["FLUX_AUTO"][ref_pid][rid], ref_phot["FLUXERR_AUTO"][ref_pid][rid]
 
-        s = ref_flux/tar_flux
-        es = np.sqrt((ref_eflux/tar_flux)**2 + (ref_flux*tar_eflux/(tar_flux**2))**2)
+        s = ref_flux/new_flux
+        es = np.sqrt((ref_eflux/new_flux)**2 + (ref_flux*new_eflux/(new_flux**2))**2)
 
         if method=="median":
             s_masked = sigma_clip(s, sigma=3.0, maxiters=5.0, stdfunc="mad_std", masked=False)
@@ -295,26 +310,26 @@ class BuildImage(object):
             alpha = np.median(s_masked)
             alpha_err = s_std/np.sqrt(ns) * np.sqrt(np.pi*(2*ns+1)/(4*ns))
 
-            # update target image and catalog
-            tar_matrix = alpha * tar_matrix
-            tar_header["BKGSIG"] = alpha * tar_header["BKGSIG"]
-            tar_phot["FLUX_AUTO"] = alpha * tar_phot["FLUX_AUTO"]
-            tar_phot["FLUXERR_AUTO"] = alpha * tar_phot["FLUXERR_AUTO"]
+            # update new image and catalog
+            new_matrix = alpha * new_matrix
+            new_header["BKGSIG"] = alpha * new_header["BKGSIG"]
+            new_phot["FLUX_AUTO"] = alpha * new_phot["FLUX_AUTO"]
+            new_phot["FLUXERR_AUTO"] = alpha * new_phot["FLUXERR_AUTO"]
         elif method=="weighted":
             alpha = np.sum(s/es**2)/np.sum(1.0/es**2)
             alpha_err = np.sqrt(0.5/np.sum(1.0/es**2))
 
-            # update target image and catalog
-            tar_matrix = alpha * tar_matrix
-            tar_header["BKGSIG"] = alpha * tar_header["BKGSIG"]
-            tar_phot["FLUX_AUTO"] = alpha * tar_phot["FLUX_AUTO"]
-            tar_phot["FLUXERR_AUTO"] = alpha * tar_phot["FLUXERR_AUTO"]
+            # update new image and catalog
+            new_matrix = alpha * new_matrix
+            new_header["BKGSIG"] = alpha * new_header["BKGSIG"]
+            new_phot["FLUX_AUTO"] = alpha * new_phot["FLUX_AUTO"]
+            new_phot["FLUXERR_AUTO"] = alpha * new_phot["FLUXERR_AUTO"]
         elif method=="fit":
-            ysize, xsize = tar_matrix.shape
-            xpos = (tar_phot["XWIN_IMAGE"]-0.5)/xsize-0.5
-            ypos = (tar_phot["YWIN_IMAGE"]-0.5)/ysize-0.5
-            xpos_star = xpos[tar_pid][tid]
-            ypos_star = ypos[tar_pid][tid]
+            xsize, ysize = self.resamp_image_size
+            xpos = (new_phot["XWIN_IMAGE"]-0.5)/xsize-0.5
+            ypos = (new_phot["YWIN_IMAGE"]-0.5)/ysize-0.5
+            xpos_star = xpos[new_pid][tid]
+            ypos_star = ypos[new_pid][tid]
 
             # estimate polynomial coefficients
             poly_indices = poly_index(poly_degree)
@@ -331,53 +346,31 @@ class BuildImage(object):
             xgrid, ygrid = self.interp_grid(xsize, ysize)
             xgrid, ygrid = (xgrid+0.5)/xsize-0.5, (ygrid+0.5)/ysize-0.5
             alpha = np.zeros((xsize, ysize), dtype=np.float32)
-            alpha_phot = np.zeros(len(tar_phot), dtype=np.float32)
+            alpha_phot = np.zeros(len(new_phot), dtype=np.float32)
             for i in range(poly_ncoeff):
                 ix_index, iy_index = poly_indices[i]
                 alpha += poly_coeffs[i] * (xgrid**ix_index) * (ygrid**iy_index)
                 alpha_phot += poly_coeffs[i] * (xpos**ix_index) * (ypos**iy_index)
             alpha = alpha.T
 
-            # update target image and catalog
-            tar_matrix = alpha * tar_matrix
-            tar_header["BKGSIG"] = mad_std(tar_matrix, ignore_nan=True)
-            tar_phot["FLUX_AUTO"] = alpha_phot * tar_phot["FLUX_AUTO"]
-            tar_phot["FLUXERR_AUTO"] = alpha_phot * tar_phot["FLUXERR_AUTO"]
+            # update new image and catalog
+            new_matrix = alpha * new_matrix
+            new_header["BKGSIG"] = mad_std(new_matrix, ignore_nan=True)
+            new_phot["FLUX_AUTO"] = alpha_phot * new_phot["FLUX_AUTO"]
+            new_phot["FLUXERR_AUTO"] = alpha_phot * new_phot["FLUXERR_AUTO"]
         else:
             sys.exit(f"!!! Incorrect calibration 'method': method={method}")
         
+        # save the matched new image and catalog
+        fits.writeto(new_image, new_matrix, new_header, overwrite=True)
+        new_phot.write(new_catalog, format="fits", overwrite=True)
+
         if photcal_figure is not None:
-            tar_flux = tar_phot["FLUX_AUTO"][tar_pid][tid]
+            new_flux = new_phot["FLUX_AUTO"][new_pid][tid]
             ref_flux = ref_phot["FLUX_AUTO"][ref_pid][rid]
-            self.flux_scale_plot(ref_flux, tar_flux, alpha, photcal_figure)
-
+            self.flux_scale_plot(ref_flux, new_flux, alpha, photcal_figure)
+        
         return
-
-    def achieve_ref(self, input_meta, band):
-        """
-        find reference image in a given meta data through matching band and central celestial coordinate
-        
-        """
-        ra_center, dec_center = self.resamp_image_center
-        xsize, ysize = self.resamp_image_size
-        ra_center, dec_center = str2deg(ra_center, dec_center)
-        
-        hx_arcsec= 0.5 * xsize * self.resamp_pixel_scale
-        hy_arcsec= 0.5 * ysize * self.resamp_pixel_scale
-        match_aperture = np.min([hx_arcsec, hy_arcsec])
-
-        # find the reference image
-        metatab = Table.read(input_meta, format="fits")
-        bid = metatab["band"]==band
-        if len(bid)==0: sys.exit(f"!!! No {band}-band image found in {os.path.basename(input_meta)}")
-        ra_ref, dec_ref = metatab["ra"][bid], metatab["dec"][bid]
-        rid, iid = crossmatch(ra_ref, dec_ref, [ra_center], [dec_center], aperture=match_aperture)
-        if len(rid)==0: sys.exit(f"!!! No reference image found in {os.path.basename(input_meta)}")
-        
-        ref_image_name = metatab["image_name"][bid][rid[0]]
-        ref_image_path = metatab["image_path"][bid][rid[0]]
-        ref_image  = os.path.join(ref_image_path, ref_image_name)
-        return ref_image
 
     def interp_badpixel(self, image_matrix, flag_map=None, grids=(20,20)):
         """
@@ -444,10 +437,10 @@ class BuildImage(object):
         model = np.matmul(coeff_matrix, crd_matrix)
         return model.flatten()
 
-    def flux_scale_plot(self, ref_flux, tar_flux, alpha, photcal_figure):
+    def flux_scale_plot(self, ref_flux, new_flux, alpha, photcal_figure):
         star_mag = -2.5*np.log10(ref_flux)
         xlim     = [np.min(star_mag)-0.5, np.max(star_mag)+0.5]
-        flux_ratio = tar_flux/ref_flux
+        flux_ratio = new_flux/ref_flux
         smean, smed, sstd = sigma_clipped_stats(flux_ratio, sigma=3.0, maxiters=5.0, stdfunc="mad_std")
         line_label = f"flux_ratio = {smed:7.5f} $\pm$ {sstd:7.5f}"
         title_label = f"flux_scale = {np.mean(alpha):8.5f} (#{len(ref_flux)} stars)"
@@ -460,43 +453,4 @@ class BuildImage(object):
         plt.savefig(photcal_figure)
         plt.clf()
         plt.close()
-
-def meta_table_iter(image_meta):
-    """
-    build/update image meta information
-
-    image_meta: str
-        meta table name
-    """
-    # open the table
-    if not os.path.exists(image_meta):
-        meta = {"image_name": ["U80",  None,         "image name"],
-                "ra":         ["f8",   units.deg,    "central ra"],
-                "dec":        ["f8",   units.deg,    "central dec"],
-                "mu_ra":      ["f8",   units.arcsec, "ra astrometric offset"],
-                "mu_dec":     ["f8",   units.arcsec, "dec astrometric offset"],
-                "std_ra":     ["f8",   units.arcsec, "ra astrometric std"],
-                "std_dec":    ["f8",   units.arcsec, "dec astrometric std"],
-                "ra_min":     ["f8",   units.deg,    "minimum ra"],
-                "ra_max":     ["f8",   units.deg,    "maximum ra"],
-                "dec_min":    ["f8",   units.deg,    "minimum dec"],
-                "dec_max":    ["f8",   units.deg,    "maximum dec"],
-                "band":       ["U5",   None,         "band/filter"],
-                "fwhm":       ["f4",   units.pixel,  "median FWHM"],
-                "nstar":      ["i8",   None,         "number of high-snr stars"],
-                "std_bkg":    ["f4",   None,         "background std"],
-                "image_path":   ["U100", None,       "image path"]}
-        colList = []
-        for ikey, ival in meta.items():
-            idtype, iunit, icom = ival
-            if iunit==None:
-                icol = Column([], name=ikey, description=icom, dtype=idtype,)
-            else:
-                icol = Column([], name=ikey, unit=iunit, description=icom, dtype=idtype,)
-            colList += [icol]
-        image_meta_tab = Table(colList)
-    else:
-        image_meta_tab = Table.read(image_meta, format="fits")
-    
-    return image_meta_tab
 
