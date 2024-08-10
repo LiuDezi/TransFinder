@@ -2,6 +2,7 @@
 
 import numpy as np
 from scipy import fft
+from astropy.stats import mad_std
 import sys
 
 from ..utils import sub_regions
@@ -33,28 +34,28 @@ class DiffImg(object):
         self.degrid = degrid
         self.nthreads = nthreads
 
-    def zero_mask(self, ref_meta, new_meta):
-        zero_pixels = (ref_meta.image_matrix==0.0) + (new_meta.image_matrix==0.0)
+    def zero_mask(self, ref_matrix, new_matrix):
+        zero_pixels = (ref_matrix==0.0) + (new_matrix==0.0)
         return zero_pixels
 
-    def nan_mask(self, ref_meta, new_meta, ref_mask, new_mask):
+    def nan_mask(self, ref_matrix, new_matrix, ref_mask, new_mask):
         """
         combine the mask matrices of reference and new images
         """
-        ref_mask_tiny = np.isnan(ref_meta.image_matrix)
-        new_mask_tiny = np.isnan(new_meta.image_matrix)
+        ref_mask_tiny = np.isnan(ref_matrix)
+        new_mask_tiny = np.isnan(new_matrix)
 
         nmask = ref_mask + new_mask + ref_mask_tiny + new_mask_tiny
         return nmask
 
-    def image_masked(self, image_meta, nmask, zmask):
+    def image_masked(self, image_matrix, image_sigma, nmask, zmask):
         """
         Fill the masked pixels with Gaussian noise N(0.0, sig^2), where
         'sig' is the standard deviation of input image
         """
-        image_filled = image_meta.image_matrix.copy()
+        image_filled = image_matrix.copy()
         if np.sum(nmask)!=0:
-            gauss_img = np.random.normal(loc=0.0,scale=image_meta.image_sigma,size=image_filled.shape)
+            gauss_img = np.random.normal(loc=0.0, scale=image_sigma, size=image_filled.shape)
             image_filled[nmask] = gauss_img[nmask]
         
         image_filled[zmask] = 0.0
@@ -74,40 +75,41 @@ class DiffImg(object):
         y_lower, y_upper = elim, y_size-elim-remd2
         return x_size, y_size, x_lower, x_upper, y_lower, y_upper
 
-    def diff(self, ref_meta, new_meta, ref_psf_model, new_psf_model, ref_mask=None, new_mask=None):
+    def diff(self, ref_matrix, new_matrix, ref_psf_model, new_psf_model, ref_mask=None, new_mask=None):
         """
         Perform image differencing between reference and new image
         
         Parameters:
-        ref_meta: python object
-          meta data of reference image
-        new_meta: python object
-          meta data of new/target image
-        ref_psf_meta: python object
-          meta data of reference PSF
-        new_psf_meta: python object
-          meta data of new/target PSF
+        ref_matrix: array
+          data matrix of reference image
+        new_matrix: array
+          data matrix of new image
+        ref_psf_model: tuple
+          model of reference PSF: (basis, field, norm)
+        new_psf_model: tuple
+          model of new PSF: (basis, field, norm)
         ref_mask: bool array
           mask map of reference image, same size as reference
         new_mask: bool array
           mask map of new/target image, same size as new/target
         """
-        # very basis check
-        if ref_meta.xsize!=new_meta.xsize or ref_meta.ysize!=new_meta.ysize:
-            sys.exit(f"!!! Image sizes of reference and new are not matched (unusual error)")
-        if ref_psf_model.psf_size!=new_psf_model.psf_size:
-            sys.exit(f"!!! PSF sizes are not matched (very unusual error)")
-        
-        xsize, ysize, psize = ref_meta.xsize, ref_meta.ysize, ref_psf_model.psf_size
-        mean_sigma = np.sqrt(ref_meta.image_sigma**2+new_meta.image_sigma**2)
+        ref_basis, ref_field, ref_norm = ref_psf_model
+        new_basis, new_field, new_norm = new_psf_model
+
+        xsize, ysize = ref_matrix.shape
+        psize2, ref_nbasis = ref_basis.shape
+        psize2, new_nbasis = new_basis.shape
+        psize = int(np.sqrt(psize2))
+        ref_sigma, new_sigma = mad_std(ref_matrix), mad_std(new_matrix)
+        mean_sigma = np.sqrt(ref_sigma**2 + new_sigma**2)
 
         # prepare maksed images
         if ref_mask is None: ref_mask = np.zeros((xsize, ysize), dtype=bool)
         if new_mask is None: new_mask = np.zeros((xsize, ysize), dtype=bool)
-        nmask = self.nan_mask(ref_meta, new_meta, ref_mask, new_mask)
-        zmask = self.zero_mask(ref_meta, new_meta)
-        ref_matrix = self.image_masked(ref_meta, nmask, zmask)
-        new_matrix = self.image_masked(new_meta, nmask, zmask)
+        nmask = self.nan_mask(ref_matrix, new_matrix, ref_mask, new_mask)
+        zmask = self.zero_mask(ref_matrix, new_matrix)
+        ref_matrix = self.image_masked(ref_matrix, ref_sigma, nmask, zmask)
+        new_matrix = self.image_masked(new_matrix, new_sigma, nmask, zmask)
         
         if self.degrid is None: 
             # Note: I know that degrid=None is basically (not completely) equivalent 
@@ -117,43 +119,43 @@ class DiffImg(object):
             xs, ys, x0, x1, y0, y1 = self.fft_basis(xsize, ysize, psize)
             
             # FFT for reference image
-            if new_psf_model.psf_nbasis==1:
-                new_psf = new_psf_model.psf_basis[:,0].reshape(psize, psize)
+            if new_nbasis==1:
+                new_psf = new_basis[:,0].reshape(psize, psize)
                 new_psf_hat = fft.rfft2(new_psf, s=(xs,ys), norm="ortho", workers=self.nthreads)
                 ref_matrix_hat = fft.rfft2(ref_matrix, s=(xs,ys), norm="ortho", workers=self.nthreads)
                 ref_matrix_hat = ref_matrix_hat*new_psf_hat
             else:
                 ref_matrix_hat = np.zeros((xs, ys//2+1), dtype=np.complex64)
-                for i in range(new_psf_model.psf_nbasis):
-                    inew_psf_basis = new_psf_model.psf_basis[:,i].reshape(psize, psize)
+                for i in range(new_nbasis):
+                    inew_psf_basis = new_basis[:,i].reshape(psize, psize)
                     inew_psf_basis_hat = fft.rfft2(inew_psf_basis, s=(xs,ys), norm="ortho", workers=self.nthreads)
                     if i==0: new_psf_hat = inew_psf_basis_hat.copy()
                     
-                    inew_psf_field = new_psf_model.psf_field[i]/new_psf_model.psf_norm
+                    inew_psf_field = new_field[i]/new_norm
                     iref_matrix = ref_matrix * inew_psf_field
                     iref_matrix_hat = fft.rfft2(iref_matrix, s=(xs,ys), norm="ortho", workers=self.nthreads)
                     ref_matrix_hat += iref_matrix_hat*inew_psf_basis_hat
 
             # FFT for new image
-            if ref_psf_model.psf_nbasis==1:
-                ref_psf = ref_psf_model.psf_basis[:,0].reshape(psize, psize)
+            if ref_nbasis==1:
+                ref_psf = ref_basis[:,0].reshape(psize, psize)
                 ref_psf_hat = fft.rfft2(ref_psf, s=(xs,ys), norm="ortho", workers=self.nthreads)
                 new_matrix_hat = fft.rfft2(new_matrix, s=(xs,ys), norm="ortho", workers=self.nthreads)
                 new_matrix_hat = new_matrix_hat*ref_psf_hat
             else:
                 new_matrix_hat = np.zeros((xs, ys//2+1), dtype=np.complex64)
-                for i in range(ref_psf_model.psf_nbasis):
-                    iref_psf_basis = ref_psf_model.psf_basis[:,i].reshape(psize, psize)
+                for i in range(ref_nbasis):
+                    iref_psf_basis = ref_basis[:,i].reshape(psize, psize)
                     iref_psf_basis_hat = fft.rfft2(iref_psf_basis, s=(xs,ys), norm="ortho", workers=self.nthreads)
                     if i==0: ref_psf_hat = iref_psf_basis_hat.copy()
 
-                    iref_psf_field = ref_psf_model.psf_field[i]/ref_psf_model.psf_norm
+                    iref_psf_field = ref_field[i]/ref_norm
                     inew_matrix = new_matrix * iref_psf_field
                     inew_matrix_hat = fft.rfft2(inew_matrix, s=(xs,ys), norm="ortho", workers=self.nthreads)
                     new_matrix_hat += inew_matrix_hat*iref_psf_basis_hat
 
-            diff_matrix_hat_b1 = new_meta.image_sigma**2 * ref_psf_hat * ref_psf_hat.conj()
-            diff_matrix_hat_b2 = ref_meta.image_sigma**2 * new_psf_hat * new_psf_hat.conj()
+            diff_matrix_hat_b1 = new_sigma**2 * ref_psf_hat * ref_psf_hat.conj()
+            diff_matrix_hat_b2 = ref_sigma**2 * new_psf_hat * new_psf_hat.conj()
             diff_matrix_norm = np.sqrt(diff_matrix_hat_b1 + diff_matrix_hat_b2)
 
             diff_matrix_hat = (new_matrix_hat - ref_matrix_hat) / diff_matrix_norm
@@ -179,56 +181,56 @@ class DiffImg(object):
                 jfxs, jfys, jfx0, jfx1, jfy0, jfy1 = self.fft_basis(jxsize, jysize, psize)
 
                 # calculate effective reference psf and new image
-                if ref_psf_model.psf_nbasis==1:
-                    jref_psf = ref_psf_model.psf_basis[:,0].reshape(psize, psize)
+                if ref_nbasis==1:
+                    jref_psf = ref_basis[:,0].reshape(psize, psize)
                     jref_psf_hat = fft.rfft2(jref_psf, s=(jfxs,jfys), norm="ortho", workers=self.nthreads)
 
                     jnew_matrix_hat = fft.rfft2(jnew_matrix, s=(jfxs,jfys), norm="ortho", workers=self.nthreads)
                     jnew_matrix_hat = jnew_matrix_hat*jref_psf_hat
                 else:
-                    jref_polyvals = np.array([kfield[jex, jey] for kfield in ref_psf_model.psf_field])
-                    jref_psf = np.matmul(ref_psf_model.psf_basis, jref_polyvals.reshape(-1,1))
+                    jref_polyvals = np.array([kfield[jex, jey] for kfield in ref_field])
+                    jref_psf = np.matmul(ref_basis, jref_polyvals.reshape(-1,1))
                     jref_psf = jref_psf.reshape(psize, psize)
-                    jref_psf = jref_psf/ref_psf_model.psf_norm[jex, jey]
+                    jref_psf = jref_psf/ref_norm[jex, jey]
                     jref_psf_hat = fft.rfft2(jref_psf, s=(jfxs,jfys), norm="ortho", workers=self.nthreads)
                     
                     jnew_matrix_hat = np.zeros((jfxs, jfys//2+1), dtype=np.complex64)
-                    for i in range(ref_psf_model.psf_nbasis):
-                        iref_psf_basis = ref_psf_model.psf_basis[:,i].reshape(psize, psize)
+                    for i in range(ref_nbasis):
+                        iref_psf_basis = ref_basis[:,i].reshape(psize, psize)
                         iref_psf_basis_hat = fft.rfft2(iref_psf_basis, s=(jfxs,jfys), norm="ortho", workers=self.nthreads)
 
-                        iref_psf_field = ref_psf_model.psf_field[i][jex0:jex1,jey0:jey1]/ref_psf_model.psf_norm[jex0:jex1,jey0:jey1]
+                        iref_psf_field = ref_field[i][jex0:jex1,jey0:jey1]/ref_norm[jex0:jex1,jey0:jey1]
                         inew_matrix = jnew_matrix * iref_psf_field
                         inew_matrix_hat = fft.rfft2(inew_matrix, s=(jfxs,jfys), norm="ortho", workers=self.nthreads)
                         jnew_matrix_hat += inew_matrix_hat*iref_psf_basis_hat
 
                 # calculate effective new psf and reference image
-                if new_psf_model.psf_nbasis==1:
-                    jnew_psf = new_psf_model.psf_basis[:,0].reshape(psize, psize)
+                if new_nbasis==1:
+                    jnew_psf = new_basis[:,0].reshape(psize, psize)
                     jnew_psf_hat = fft.rfft2(jnew_psf, s=(jfxs,jfys), norm="ortho", workers=self.nthreads)
 
                     jref_matrix_hat = fft.rfft2(jref_matrix, s=(jfxs,jfys), norm="ortho", workers=self.nthreads)
                     jref_matrix_hat = jref_matrix_hat*jnew_psf_hat
                 else:
-                    jnew_polyvals = np.array([kfield[jex, jey] for kfield in new_psf_model.psf_field])
-                    jnew_psf = np.matmul(new_psf_model.psf_basis, jnew_polyvals.reshape(-1,1))
+                    jnew_polyvals = np.array([kfield[jex, jey] for kfield in new_field])
+                    jnew_psf = np.matmul(new_basis, jnew_polyvals.reshape(-1,1))
                     jnew_psf = jnew_psf.reshape(psize, psize)
-                    jnew_psf = jnew_psf/new_psf_model.psf_norm[jex, jey]
+                    jnew_psf = jnew_psf/new_norm[jex, jey]
                     jnew_psf_hat = fft.rfft2(jnew_psf, s=(jfxs,jfys), norm="ortho", workers=self.nthreads)
                     
                     jref_matrix_hat = np.zeros((jfxs, jfys//2+1), dtype=np.complex64)
-                    for i in range(new_psf_model.psf_nbasis):
-                        inew_psf_basis = new_psf_model.psf_basis[:,i].reshape(psize, psize)
+                    for i in range(new_nbasis):
+                        inew_psf_basis = new_basis[:,i].reshape(psize, psize)
                         inew_psf_basis_hat = fft.rfft2(inew_psf_basis, s=(jfxs,jfys), norm="ortho", workers=self.nthreads)
 
-                        inew_psf_field = new_psf_model.psf_field[i][jex0:jex1,jey0:jey1]/new_psf_model.psf_norm[jex0:jex1,jey0:jey1]
+                        inew_psf_field = new_field[i][jex0:jex1,jey0:jey1]/new_norm[jex0:jex1,jey0:jey1]
                         iref_matrix = jref_matrix * inew_psf_field
                         iref_matrix_hat = fft.rfft2(iref_matrix, s=(jfxs,jfys), norm="ortho", workers=self.nthreads)
                         jref_matrix_hat += iref_matrix_hat*inew_psf_basis_hat
                 
                 # normalization
-                jdiff_matrix_hat_b1 = new_meta.image_sigma**2 * jref_psf_hat * jref_psf_hat.conj()
-                jdiff_matrix_hat_b2 = ref_meta.image_sigma**2 * jnew_psf_hat * jnew_psf_hat.conj()
+                jdiff_matrix_hat_b1 = new_sigma**2 * jref_psf_hat * jref_psf_hat.conj()
+                jdiff_matrix_hat_b2 = ref_sigma**2 * jnew_psf_hat * jnew_psf_hat.conj()
                 jdiff_matrix_norm = np.sqrt(jdiff_matrix_hat_b1 + jdiff_matrix_hat_b2)
 
                 # difference image

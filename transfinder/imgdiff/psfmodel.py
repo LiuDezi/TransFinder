@@ -61,6 +61,21 @@ class PSFModel(object):
         self.poly_degree = poly_degree
         self.poly_ncoeff = (poly_degree+1)*(poly_degree+2)//2
         self.poly_indices = poly_index(poly_degree)
+    
+    def run(self, image_matrix, star_matrix, output_prefix=None):
+        """
+        put everything together
+        """
+        star_pos, star_stm = self.select_stars(image_matrix, star_matrix)
+        psf_basis = self.psf_basis_estimator(star_stm)
+        psf_field = self.psf_field_estimator(star_pos, star_stm, psf_basis)
+        psf_norm = self.psf_norm_estimator(psf_basis, psf_field)
+        
+        # save everything
+        if output_prefix is not None:
+            self.model_diagnosis(star_pos, star_stm, (psf_basis, psf_field, psf_norm), output_prefix=output_prefix)
+        
+        return psf_basis, psf_field, psf_norm
 
     def select_stars(self, image_matrix, star_matrix):
         """
@@ -164,9 +179,9 @@ class PSFModel(object):
             ypos_new = np.append(ypos_new, iy_offset + iy_int)
             star_size = np.append(star_size, istm_moment.moments_sigma)
             if nstar_new==1:
-                star_matrix = istm.reshape(-1,1)
+                star_stamp = istm.reshape(-1,1)
             else:
-                star_matrix = np.hstack((star_matrix, istm.reshape(-1,1)))
+                star_stamp = np.hstack((star_stamp, istm.reshape(-1,1)))
         
         # remove outliers based on star size
         mask_size = sigma_clip(star_size, sigma=3.0, maxiters=5.0, stdfunc="mad_std", masked=True)
@@ -176,7 +191,7 @@ class PSFModel(object):
         if np.sum(gid)!=nstar_new:
             print(f"    Find {nstar_new-np.sum(gid)} outliers, remove them and find more")
             nstar_new = np.sum(gid)
-            xpos_new, ypos_new, star_matrix = xpos_new[gid], ypos_new[gid], star_matrix[:, gid]
+            xpos_new, ypos_new, star_stamp = xpos_new[gid], ypos_new[gid], star_stamp[:, gid]
             star_size = star_size[gid]
             sigma_size, median_size = mad_std(star_size), np.median(star_size)
             if i<nstar-1:
@@ -241,7 +256,7 @@ class PSFModel(object):
                     nstar_new += 1
                     xpos_new = np.append(xpos_new, ix_offset + ix_int)
                     ypos_new = np.append(ypos_new, iy_offset + iy_int)
-                    star_matrix = np.hstack((star_matrix, istm.reshape(-1,1)))
+                    star_stamp = np.hstack((star_stamp, istm.reshape(-1,1)))
                     star_size = np.append(star_size, istm_moment.moments_sigma)
                     sigma_size, median_size = mad_std(star_size), np.median(star_size)
             else:
@@ -256,13 +271,13 @@ class PSFModel(object):
         self.nstar = nstar_new
         self.ysize, self.xsize = image_matrix.shape
         star_position = np.vstack((xpos_new, ypos_new)).T
-        return star_position, star_matrix
+        return star_position, star_stamp
 
-    def psf_covmat(self, star_matrix):
+    def psf_covmat(self, star_stamp):
         """
         Calculate the covariance matrix of PSF stars
         """
-        cov_matrix = np.cov(star_matrix, rowvar=False)
+        cov_matrix = np.cov(star_stamp, rowvar=False)
         return cov_matrix
 
     def eigen_decom(self, cov_matrix):
@@ -279,12 +294,12 @@ class PSFModel(object):
         eigvec = evectors[:,::-1]
         return eigval, eigvec
 
-    def psf_basis_estimator(self, star_matrix, output=None):
+    def psf_basis_estimator(self, star_stamp):
         """
         derive the PSF basis functions. At most three PSF basis functions are kept
         """
         print("    Estimate PSF basis functions")
-        cov_matrix = self.psf_covmat(star_matrix)
+        cov_matrix = self.psf_covmat(star_stamp)
         valm, vecm = self.eigen_decom(cov_matrix)
         ptot = abs(valm)/sum(abs(valm))
         nbasis = 1
@@ -304,26 +319,17 @@ class PSFModel(object):
         psf_basis = np.zeros((self.psf_size**2, nbasis))
         for i in range(nbasis):
             for j in range(self.nstar):
-                jpsf = star_matrix[:,j]
+                jpsf = star_stamp[:,j]
                 psf_basis[:,i] += vecm[j, i] * jpsf
             
             # normalize the PSF basis by the sum of first component
             if i==0: psf_norm = np.sum(psf_basis[:,0])
             psf_basis[:,i]  = psf_basis[:,i] / psf_norm
         
-        if output is not None:
-            for i in range(nbasis):
-                ipsf_out = psf_basis[:,i].reshape(self.psf_size, self.psf_size)
-                if i==0:
-                    psf_out = ipsf_out
-                else:
-                    psf_out = np.hstack((psf_out, ipsf_out), dtype=np.float32)
-            fits.writeto(output, psf_out, overwrite=True)
-        #self.psf_basis = psf_basis
         self.nbasis = nbasis
         return psf_basis
 
-    def psf_field_estimator(self, star_position, star_matrix, psf_basis, output=None):
+    def psf_field_estimator(self, star_position, star_stamp, psf_basis):
         """
         Construct the coefficient fields based on the PSF basis functions and corresponding polynomial fields.
         """
@@ -332,7 +338,7 @@ class PSFModel(object):
         if self.nbasis == 1: 
             field_list = [None]
         else:
-            poly_coeffs, poly_coeffs_unc = self.poly_fit(star_position, star_matrix, psf_basis)
+            poly_coeffs, poly_coeffs_unc = self.poly_fit(star_position, star_stamp, psf_basis)
             xgrid, ygrid = np.mgrid[:self.xsize, :self.ysize]
             xgrid = (xgrid+0.5)/self.xsize - 0.5
             ygrid = (ygrid+0.5)/self.ysize - 0.5
@@ -342,15 +348,11 @@ class PSFModel(object):
                 for j in range(self.poly_ncoeff):
                     jx_index, jy_index = self.poly_indices[j]
                     ifield += poly_coeffs[i,j] * (xgrid**jx_index) * (ygrid**jy_index)
-                field_list.append(ifield.astype(np.float32).T)
-            
-            # save the psf fields
-            if output is not None:
-                fits.writeto(output, np.array(field_list), overwrite=True)
+                field_list.append(ifield.T.astype(np.float32))
 
         return field_list
 
-    def psf_norm_estimator(self, psf_basis, psf_field, output=None):
+    def psf_norm_estimator(self, psf_basis, psf_field):
         """
         Calculate the PSF normalization image given in Lauer 2002.
 
@@ -378,8 +380,7 @@ class PSFModel(object):
                 ipsf_basis_fft = fft.rfft2(ipsf_basis, s=(y_size, x_size), workers=-1)
                 inorm_matrix= fft.irfft2(ipsf_field_fft*ipsf_basis_fft, workers=-1)
                 norm_matrix += inorm_matrix[elim:y_size-elim-remd2,elim:x_size-elim-remd1]
-            if output is not None:
-                fits.writeto(output, norm_matrix, overwrite=True)
+        
         return norm_matrix
 
     def poly_model(self, input_data, *coeffs_list):
@@ -400,7 +401,7 @@ class PSFModel(object):
         model = np.matmul(model, crd_matrix)
         return model.flatten()
 
-    def poly_fit(self, star_position, star_matrix, psf_basis):
+    def poly_fit(self, star_position, star_stamp, psf_basis):
         """
         The scipy 'curve_fit' is used to find the best-fitting polynomial coefficients.
         """
@@ -412,7 +413,7 @@ class PSFModel(object):
             ix_index, iy_index = self.poly_indices[i]
             crd_matrix[i,:] = (xpos**ix_index) * (ypos**iy_index)
         
-        flux = star_matrix.flatten()
+        flux = star_stamp.flatten()
 
         init_coeff = np.ones(self.nbasis * self.poly_ncoeff)
         popt, pcov = optimize.curve_fit(self.poly_model, np.append(psf_basis,crd_matrix), flux, p0=init_coeff)
@@ -434,18 +435,36 @@ class PSFModel(object):
         psf_model = psf_model.reshape(self.psf_size, self.psf_size)
         return psf_model
 
-    def model_residual(self, star_positions, star_matrix, psf_basis, psf_field, psf_norm, output="residual.fits"):
+    def model_diagnosis(self, star_position, star_stamp, psf_model, output_prefix="model_diagnosis"):
         """
         save the model residual stamps and figure
         """
+        # define output filenames
+        output_basis = output_prefix + ".psf_basis.fits"
+        output_field = output_prefix + ".psf_field.fits"
+        output_resi = output_prefix + ".psf_resi.fits"
+        
+        psf_basis, psf_field, psf_norm = psf_model
+        # psf basis
+        for i in range(self.nbasis):
+            ibasis = psf_basis[:,i].reshape(self.psf_size, self.psf_size)
+            if i==0:
+                obasis = ibasis
+            else:
+                obasis = np.hstack((obasis, ibasis), dtype=np.float32)
+        fits.writeto(output_basis, obasis, overwrite=True)
+        
+        # psf fields and normalization map
+        if self.nbasis>1: fits.writeto(output_field, np.array(psf_field + [psf_norm]), overwrite=True)
+
         # save the residuals of psf model
-        xpos, ypos = star_positions[:,0], star_positions[:,1]
+        xpos, ypos = star_position[:,0], star_position[:,1]
         psf_resi_list = []
         psf_resi_size = np.zeros((self.nstar,2), dtype=np.float32)
         for i in range(self.nstar):
             ixpos, iypos = xpos[i], ypos[i]
             ipsf_model = self.psf_at_position(ixpos, iypos, psf_basis, psf_field, psf_norm)
-            ipsf_real = star_matrix[:,i].reshape(self.psf_size, self.psf_size)
+            ipsf_real = star_stamp[:,i].reshape(self.psf_size, self.psf_size)
             ipsf_resi = ipsf_real - ipsf_model
             ipsf_resi_model = np.hstack((ipsf_real, ipsf_model, ipsf_resi), dtype=np.float32)
             psf_resi_list.append(ipsf_resi_model)
@@ -459,12 +478,12 @@ class PSFModel(object):
             imodel_sigma = imodel_moment.moments_sigma
             iresi_size = (ireal_sigma - imodel_sigma) / ireal_sigma
             psf_resi_size[i, :] = [ireal_sigma, iresi_size]
-        fits.writeto(output, np.array(psf_resi_list), overwrite=True)
+        fits.writeto(output_resi, np.array(psf_resi_list), overwrite=True)
         
         plt.plot(psf_resi_size[:,0], psf_resi_size[:,1], "o", color="black", ms=2.5)
         plt.xlabel("$\sigma_{star}$ [pixels]", fontsize=12)
         plt.ylabel("$(\sigma_{star} - \sigma_{model})/\sigma_{star}$", fontsize=12)
-        plt.savefig(output[:-4] + "pdf")
+        plt.savefig(output_resi[:-4] + "pdf")
         plt.clf()
         plt.close()
 

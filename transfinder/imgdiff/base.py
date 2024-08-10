@@ -1,7 +1,8 @@
 # The routine provides basic functions for image differencing
 # Functions and classes:
 # 1) BaseCheck
-# 2) LoadMeta
+# 2) swarp_shell
+# 3) sextractor_shell
 
 import numpy as np
 from astropy.table import Table
@@ -47,48 +48,6 @@ class BaseCheck(object):
                     "CD1_1", "CD1_2", "CD2_1", "CD2_2"]
         return wcs_keys
 
-class LoadMeta(object):
-    """
-    Load the image and catalog from a given image type (ref/new)
-
-    Parameters:
-    image: str
-        name of input image with absolute path
-    """
-    def __init__(self, image, catalog=None):
-        self.image = image
-        self.catalog = self.image[:-4] + "phot.fits"
-        
-        if catalog is not None: self.catalog = catalog
-
-        self.image_meta()
-        self.catalog_meta()
-
-    def image_meta(self,hdu=0):
-        image_matrix, image_header = fits.getdata(self.image, header=True, ext=hdu)
-        self.image_matrix = image_matrix.T
-        self.image_header = image_header
-        self.pixel_scale = image_header["PSCALE"]
-        self.xsize = image_header["NAXIS1"]
-        self.ysize = image_header["NAXIS2"]
-        self.image_sigma = image_header["BKGSIG"]
-        self.star_fwhm = image_header["FWHM"]
-        self.nstar = image_header["NSTAR"]
-
-        psf_size = int(7.0 * self.star_fwhm)
-        if np.mod(psf_size,2)==0: psf_size += 1
-        self.psf_size = np.max([31, psf_size])
-        return
-
-    def catalog_meta(self):
-        catalog_matrix = Table.read(self.catalog, format="fits")
-        self.nobj = len(catalog_matrix)
-        self.obj_matrix = catalog_matrix
-        
-        gid = (catalog_matrix["RA_BASE"]!=-99.0) & (catalog_matrix["DEC_BASE"]!=-99.0)
-        self.star_matrix = catalog_matrix[gid]
-        return
-
 def swarp_shell():
     """
     Check if swarp is installed.
@@ -112,4 +71,3 @@ def sextractor_shell():
     if len(eid)==0: sys.exit("!!! No SExtractor installed")
     #assert len(eid)!=0, "!!! No SExtractor installed"
     return eid[0]
-
