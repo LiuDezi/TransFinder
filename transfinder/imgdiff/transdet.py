@@ -25,17 +25,17 @@ class ExtractTrans(object):
     trans_meta_table: "mephisto_transient_metadata.fits"
     """
     def __init__(self,
-                 sex_config_file, sex_param_file,
-                 sex_exe = "sextractor",
-                 detect_thresh = 2.0,
-                 analysis_thresh = 2.0,
-                 detect_minarea = 5,
-                 trans_stamp_size = 49,
-                 deblend_aper = None,
-                 trans_meta_update = False,
-                 trans_meta_path = None,
-                 trans_meta_table = "mephisto_transient_metadata.fits",
-                 ):
+        sex_config_file, sex_param_file,
+        sex_exe = "sextractor",
+        detect_thresh = 2.0,
+        analysis_thresh = 2.0,
+        detect_minarea = 5,
+        trans_stamp_size = 49,
+        deblend_aper = None,
+        trans_meta_update = False,
+        trans_meta_path = None,
+        trans_meta_table = "mephisto_transient_metadata.fits",
+        ):
         self.sex_config_file = sex_config_file
         self.sex_param_file = sex_param_file
         self.sex_exe = sex_exe

@@ -4,9 +4,9 @@
 # MIT License
 #
 # import modules
-from .base import BaseCheck, LoadMeta, swarp_shell, sextractor_shell
+from .base import BaseCheck, swarp_shell, sextractor_shell
 from .buildimg import BuildImage
-from .psfmodel import MaskStar, PSFStar, PSFModel
+from .psfmodel import PSFModel
 from .diff import DiffImg
 from .transdet import ExtractTrans
 #from .detection import run

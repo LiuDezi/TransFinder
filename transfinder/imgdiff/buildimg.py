@@ -29,6 +29,8 @@ import subprocess
 from .base import BaseCheck
 from ..utils import wds9reg, crossmatch, deg2str, str2deg, sub_regions, poly_index
 
+__all__ = ["image_resamp", "phot_match", "saturation_mask"]
+
 class BuildImage(object):
     """
     Build resampled reference/new images.
@@ -183,9 +185,9 @@ class BuildImage(object):
         # 4) update resample parameters
         self.resamp_param_update(image_header)
         print("    Resampled parameters:")
-        print(f"   1) image center: {self.resamp_image_center}")
-        print(f"   2) image size: {self.resamp_image_size}")
-        print(f"   3) image pixel scale: {self.resamp_pixel_scale} arcsec/pixel")
+        print(f"    1) image center: {self.resamp_image_center}")
+        print(f"    2) image size: {self.resamp_image_size}")
+        print(f"    3) image pixel scale: {self.resamp_pixel_scale} arcsec/pixel")
 
         # 5) run swarp and perform photometry
         swarp_runner  = self.swarp_runner(output_image, input_weight, output_image, output_weight)
@@ -213,9 +215,10 @@ class BuildImage(object):
         mean_dec, median_dec, std_dec = sigma_clipped_stats(delta_dec, sigma=3.0, maxiters=5.0)
 
         # 7) update the catalog
-        rab_full, decb_full = np.zeros(nobj) - 99.0, np.zeros(nobj) - 99.0
-        rab_full[sid], decb_full[sid] = rab[gid], decb[gid]
-        phot_matrix.add_columns([rab_full, decb_full], names=["RA_BASE", "DEC_BASE"])
+        star_flag, rab_full, decb_full = np.zeros(nobj, dtype=int), np.full(nobj, -99.0), np.full(nobj, -99.0)
+        star_flag[sid], rab_full[sid], decb_full[sid] = 1, rab[gid], decb[gid]
+
+        phot_matrix.add_columns([star_flag, rab_full, decb_full], names=["FLAG_STAR", "RA_STAR", "DEC_STAR"])
         phot_matrix.write(output_catalog, format="fits", overwrite=True)
         wds9reg(ra[sid], dec[sid], radius=5.0, unit="arcsec", color="red", outfile=output_region)
 
@@ -261,7 +264,7 @@ class BuildImage(object):
         image_matrix = image_matrix.astype(np.float32)
         fits.writeto(output_image, image_matrix, image_header, overwrite=True)
     
-        return output_image, output_catalog, image_matrix, image_header, phot_matrix
+        return output_image, output_catalog, image_header, image_matrix, phot_matrix
 
     def phot_match(self, new_meta, ref_meta, method="median", poly_degree=3, photcal_figure=None):
         """
@@ -281,19 +284,19 @@ class BuildImage(object):
         photcal_figure: str
           save comparison figure of final calibrated fluxes of new and ref.
         """
-        new_image, new_catalog, new_matrix, new_header, new_phot = new_meta
-        ref_image, ref_catalog, ref_matrix, ref_header, ref_phot = ref_meta
+        new_image, new_catalog, new_header, new_matrix, new_phot = new_meta
+        ref_image, ref_catalog, ref_header, ref_matrix, ref_phot = ref_meta
         
-        new_pid = (new_phot["RA_BASE"]!=-99.0) & (new_phot["DEC_BASE"]!=-99.0)
-        ref_pid = (ref_phot["RA_BASE"]!=-99.0) & (ref_phot["DEC_BASE"]!=-99.0)
+        new_pid = new_phot["FLAG_STAR"]==1
+        ref_pid = ref_phot["FLAG_STAR"]==1
         
         # find common stars
-        new_ra, new_dec = new_phot["RA_BASE"][new_pid], new_phot["DEC_BASE"][new_pid]
-        ref_ra, ref_dec = ref_phot["RA_BASE"][ref_pid], ref_phot["DEC_BASE"][ref_pid]
+        new_ra, new_dec = new_phot["RA_STAR"][new_pid], new_phot["DEC_STAR"][new_pid]
+        ref_ra, ref_dec = ref_phot["RA_STAR"][ref_pid], ref_phot["DEC_STAR"][ref_pid]
 
         tid, rid = crossmatch(new_ra, new_dec, ref_ra, ref_dec, aperture=3.0)
         nstar = len(tid)
-        if nstar<200 and method=="fit":
+        if nstar<200 and method=="fitted":
             print(f"!!! Only {nstar} stars for relative photometric calibration.")
             method = "weighted"
             print(f"!!! 'method={method}' will be used instead.")
@@ -324,7 +327,7 @@ class BuildImage(object):
             new_header["BKGSIG"] = alpha * new_header["BKGSIG"]
             new_phot["FLUX_AUTO"] = alpha * new_phot["FLUX_AUTO"]
             new_phot["FLUXERR_AUTO"] = alpha * new_phot["FLUXERR_AUTO"]
-        elif method=="fit":
+        elif method=="fitted":
             xsize, ysize = self.resamp_image_size
             xpos = (new_phot["XWIN_IMAGE"]-0.5)/xsize-0.5
             ypos = (new_phot["YWIN_IMAGE"]-0.5)/ysize-0.5
@@ -370,7 +373,92 @@ class BuildImage(object):
             ref_flux = ref_phot["FLUX_AUTO"][ref_pid][rid]
             self.flux_scale_plot(ref_flux, new_flux, alpha, photcal_figure)
         
-        return
+        return new_image, new_catalog, new_header, new_matrix, new_phot
+
+    def saturation_mask(self, photcat, mask_scale=1.5):
+        """
+        Calculate the circular masking regions of saturated stars
+
+        Parameters:
+        photcat: array
+          photometric catalog
+        mask_scale: float
+          scale parameter applied to the original mask circular
+
+        Return:
+          Bool matrix with masking pixels assigned as True
+        """
+        saturate_param = self.select_saturated_object(photcat)
+        xsize, ysize = self.resamp_image_size
+
+        mask_matrix = np.full((ysize,xsize),False)
+        xstep, ystep = np.ogrid[:xsize, :ysize]
+        for sid, ipar in saturate_param.items():
+            ixcen, iycen, irad = ipar
+            irad = irad * mask_scale
+
+            # extract the subimage to speed up
+            irad_int = int(np.ceil(irad))
+            ixcen_int, iycen_int = int(round(ixcen-1)), int(round(iycen-1))
+            ix0, ix1 = ixcen_int-irad_int, ixcen_int+irad_int
+            iy0, iy1 = iycen_int-irad_int, iycen_int+irad_int
+
+            ixstep_sub, iystep_sub = xstep[ix0:ix1+1,:], ystep[:,iy0:iy1+1]
+            ixcen_new, iycen_new = np.median(ixstep_sub), np.median(iystep_sub)
+            idist = np.sqrt((ixstep_sub-ixcen_new)**2 + (iystep_sub-iycen_new)**2)
+            mask_matrix[iy0:iy1+1,ix0:ix1+1] += idist.T <= irad
+            
+            # classical method is slow in the case of many saturated stars
+            #idist = np.sqrt((xstep-ixcen+1.0)**2 + (ystep-iycen+1.0)**2)
+            #mask += idist <= irad
+        return mask_matrix
+
+    def select_saturated_object(self, photcat):
+        """
+        Find the saturated stars in a given catalog.
+        The catalog is generated by Sextractor in LDAC format, in which 
+        the X/Y_Image and FLAGS should provided
+        """
+        ximg, yimg = photcat["XWIN_IMAGE"], photcat["YWIN_IMAGE"]
+        xmin, xmax = photcat["XMIN_IMAGE"], photcat["XMAX_IMAGE"]
+        ymin, ymax = photcat["YMIN_IMAGE"], photcat["YMAX_IMAGE"]
+        flag = photcat["FLAGS"]
+        nobj = len(photcat)
+
+        #find the saturated stars
+        nstar   = 0
+        saturate_param = {}
+        for i in range(nobj):
+            iflag = int(flag[i])
+            ipow  = self.decomp_flags(iflag)
+            if 4 not in ipow: continue
+            ixmax = np.max([ximg[i]-xmin[i], xmax[i]-ximg[i]])
+            iymax = np.max([yimg[i]-ymin[i], ymax[i]-yimg[i]])
+            irad  = np.max([ixmax, iymax])
+            nstar += 1
+            saturate_param[i] = [ximg[i],yimg[i],irad]
+
+        print(f"    Total {nstar} saturated stars")
+        return saturate_param
+
+    def decomp_flags(self, flag):
+        """
+        Decompose Sextractor flags into single numbers of power 2
+    
+        Parameter:
+        flag: int
+              Sextractor FLAGS
+        Example: 
+            pow = decompFlags(25)
+            pow = [1, 8, 16]
+        """
+        assert type(flag)==int, "!!! flag must be integer."
+        powers = []
+        spow = 1
+        while spow <= flag:
+            if spow & flag: powers.append(spow)
+            spow <<= 1
+        return powers
 
     def interp_badpixel(self, image_matrix, flag_map=None, grids=(20,20)):
         """
