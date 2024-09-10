@@ -38,12 +38,14 @@ class PSFModel(object):
     2) image differencing in Fouries space
 
     Parameters:
-    psf_star: class
-        parameters of PSF stars to model the image PSF
-    imgCatPar: class
-        parameters related to input image and catalog
+    psf_size: int
+        pixel size of output PSF model, much be odd
     info_frac: float
         fraction of effective infomation used for PCA analysis
+    nstar_max: int
+        maximum number of stars for PSF modeling
+    nbasis_max: int
+        maximum number of PSF basis functions
     poly_degree: int
         degree to model the PSF variation over the entire image
     """
@@ -65,6 +67,12 @@ class PSFModel(object):
     def run(self, image_matrix, star_matrix, output_prefix=None):
         """
         put everything together
+
+        Parameters:
+        image_matrix: array
+            image data loaded by getdata
+        star_matrix: array
+            star catalog loaded by Table
         """
         star_pos, star_stm = self.select_stars(image_matrix, star_matrix)
         psf_basis = self.psf_basis_estimator(star_stm)
@@ -334,23 +342,23 @@ class PSFModel(object):
         Construct the coefficient fields based on the PSF basis functions and corresponding polynomial fields.
         """
         print("    Estimate the spatially varied PSF fields")
-        field_list = []
         if self.nbasis == 1: 
             field_list = [None]
         else:
             poly_coeffs, poly_coeffs_unc = self.poly_fit(star_position, star_stamp, psf_basis)
-            xgrid, ygrid = np.mgrid[:self.xsize, :self.ysize]
+            
+            xgrid, ygrid = np.ogrid[:self.xsize, :self.ysize]
             xgrid = (xgrid+0.5)/self.xsize - 0.5
             ygrid = (ygrid+0.5)/self.ysize - 0.5
-        
-            for i in range(self.nbasis):
-                ifield = np.zeros((self.xsize, self.ysize), dtype=np.float32)
-                for j in range(self.poly_ncoeff):
-                    jx_index, jy_index = self.poly_indices[j]
-                    ifield += poly_coeffs[i,j] * (xgrid**jx_index) * (ygrid**jy_index)
-                field_list.append(ifield.T.astype(np.float32))
+            field_list = np.zeros((self.nbasis, self.xsize, self.ysize), dtype=np.float32)
+            for j in range(self.poly_ncoeff):
+                jx_index, jy_index = self.poly_indices[j]
+                jpos = np.matmul(xgrid**jx_index, ygrid**jy_index)
+                for i in range(self.nbasis):
+                    field_list[i] += poly_coeffs[i,j] * jpos
+            field_list = np.transpose(field_list, axes=(0,2,1))
 
-        return field_list
+        return list(field_list)
 
     def psf_norm_estimator(self, psf_basis, psf_field):
         """
@@ -380,7 +388,7 @@ class PSFModel(object):
                 ipsf_basis_fft = fft.rfft2(ipsf_basis, s=(y_size, x_size), workers=-1)
                 inorm_matrix= fft.irfft2(ipsf_field_fft*ipsf_basis_fft, workers=-1)
                 norm_matrix += inorm_matrix[elim:y_size-elim-remd2,elim:x_size-elim-remd1]
-        
+
         return norm_matrix
 
     def poly_model(self, input_data, *coeffs_list):

@@ -25,8 +25,8 @@ class ExtractTrans(object):
     trans_meta_table: "mephisto_transient_metadata.fits"
     """
     def __init__(self,
-        sex_config_file, sex_param_file,
-        sex_exe = "sextractor",
+        sextractor_config, sextractor_param,
+        sextractor_exe = "sextractor",
         detect_thresh = 2.0,
         analysis_thresh = 2.0,
         detect_minarea = 5,
@@ -36,9 +36,9 @@ class ExtractTrans(object):
         trans_meta_path = None,
         trans_meta_table = "mephisto_transient_metadata.fits",
         ):
-        self.sex_config_file = sex_config_file
-        self.sex_param_file = sex_param_file
-        self.sex_exe = sex_exe
+        self.sextractor_config = sextractor_config
+        self.sextractor_param = sextractor_param
+        self.sextractor_exe = sextractor_exe
         self.detect_thresh = detect_thresh
         self.analysis_thresh = analysis_thresh
         self.detect_minarea = detect_minarea
@@ -55,7 +55,7 @@ class ExtractTrans(object):
         """
         photometry by sextractor
         """
-        sexcmd1 = f"{self.sex_exe} {image_name} -c {self.sex_config_file} -PARAMETERS_NAME {self.sex_param_file} "
+        sexcmd1 = f"{self.sextractor_exe} {image_name} -c {self.sextractor_config} -PARAMETERS_NAME {self.sextractor_param} "
         sexcmd2 = f"-DETECT_THRESH {self.detect_thresh} -ANALYSIS_THRESH {self.analysis_thresh} "
         sexcmd3 = f"-DETECT_MINAREA {self.detect_minarea} "
         sexcmd4 = f"-CATALOG_NAME {catalog_name} -WEIGHT_TYPE NONE -CHECKIMAGE_TYPE NONE "
@@ -68,7 +68,9 @@ class ExtractTrans(object):
         subprocess.run(sexcmd, shell=True)
         return
 
-    def extract_trans(self, diff_image, diff_matrix, ref_meta, new_meta, 
+    def extract_trans(self, diff_image, diff_matrix, 
+                      ref_header, ref_matrix, 
+                      new_header, new_matrix,
                       cutout_write=False, cutout_path=None):
         """
         extract transient stamps from the difference image
@@ -86,10 +88,11 @@ class ExtractTrans(object):
         # estimate typical positional uncertainty for deblending. I know that 
         # astrometry can also lead to positional uncertainty, but it is much 
         # smaller than that induced by fwhm.
-        pixel_scale = new_meta.image_header["PSCALE"]
+        pixel_scale = new_header["PSCALE"]
+        xsize, ysize = new_header["NAXIS1"], new_header["NAXIS2"]
         if self.deblend_aper is None:
-            ref_fwhm = ref_meta.image_header["FWHM"]
-            new_fwhm = new_meta.image_header["FWHM"]
+            ref_fwhm = ref_header["FWHM"]
+            new_fwhm = new_header["FWHM"]
             upos = int(np.ceil(np.sqrt(ref_fwhm**2+new_fwhm**2)*1.2739827))
         else:
             upos = self.deblend_aper / pixel_scale
@@ -103,8 +106,8 @@ class ExtractTrans(object):
             sys.exit(f"!!! set it to 'trans_stamp_size'={self.trans_staimp_size+12} or larger ???")
 
         # load some useful information
-        band = new_meta.image_header["FILTER"]
-        image_wcs = wcs.WCS(new_meta.image_header)
+        band = new_header["FILTER"]
+        image_wcs = wcs.WCS(new_header)
         
         # configuration for aperture photometry
         kernel = Gaussian2DKernel(x_stddev=1)
@@ -115,15 +118,16 @@ class ExtractTrans(object):
 
         # start transient extraction
         diff_trans_table = diff_image[:-5] + "_trans.fits"
+        if os.path.exists(diff_trans_table): os.remove(diff_trans_table)
         diff_trans_iter = meta_obj.meta_table_iter(diff_trans_table, mode="trans")
         crds_ra, crds_dec, ntrans = np.array([]), np.array([]), 0
         for idiff_mode, idiff_image in diff_mode.items():
             # first save difference image
             if idiff_mode==1:
-                fits.writeto(idiff_image, diff_matrix.T, new_meta.image_header, overwrite=True)
+                fits.writeto(idiff_image, diff_matrix, new_header, overwrite=True)
                 region_color = "red"
             else:
-                fits.writeto(idiff_image, 0.0-diff_matrix.T, new_meta.image_header, overwrite=True)
+                fits.writeto(idiff_image, 0.0-diff_matrix, new_header, overwrite=True)
                 region_color = "green"
 
             # then photometry
@@ -153,11 +157,11 @@ class ExtractTrans(object):
                 jy0, jy1 = jyimg - upos, jyimg + upos
                 
                 if jx0<=0 or jy0<=0: continue
-                if jx1>new_meta.xsize or jy1>new_meta.ysize: continue
+                if jx1>xsize or jy1>ysize: continue
 
                 # get the stamp
-                jref_stm = ref_meta.image_matrix[jx0:jx1+1,jy0:jy1+1]
-                jnew_stm = new_meta.image_matrix[jx0:jx1+1,jy0:jy1+1]
+                jref_stm = ref_matrix[jy0:jy1+1,jx0:jx1+1]
+                jnew_stm = new_matrix[jy0:jy1+1,jx0:jx1+1]
                 jref_stm_conv = convolve(jref_stm, kernel)
                 jnew_stm_conv = convolve(jnew_stm, kernel)
                 jref_maxid = np.unravel_index(np.argmax(jref_stm_conv, axis=None), jref_stm_conv.shape)
@@ -172,7 +176,7 @@ class ExtractTrans(object):
                 if min_bias>upos:
                     print(f"    Object {j+1} is an alien, it is rejected")
                     continue
-                jx_peak, jy_peak = jmaxid[min_id]
+                jy_peak, jx_peak = jmaxid[min_id]
                 jx_peak = jx_peak - upos + jximg
                 jy_peak = jy_peak - upos + jyimg
                 jra_peak, jdec_peak = image_wcs.all_pix2world(jx_peak, jy_peak, 0)
@@ -193,17 +197,18 @@ class ExtractTrans(object):
                 jx0, jx1 = jx_peak - half_stamp_size, jx_peak + half_stamp_size
                 jy0, jy1 = jy_peak - half_stamp_size, jy_peak + half_stamp_size
                 if jx0<=0 or jy0<=0: continue
-                if jx1>new_meta.xsize or jy1>new_meta.ysize: continue
+                if jx1>=xsize or jy1>=ysize: continue
 
-                jdiff_matrix = diff_matrix[jx0:jx1+1,jy0:jy1+1]
-                jref_matrix = ref_meta.image_matrix[jx0:jx1+1,jy0:jy1+1]
-                jnew_matrix = new_meta.image_matrix[jx0:jx1+1,jy0:jy1+1]
+                jdiff_matrix = diff_matrix[jy0:jy1+1,jx0:jx1+1]
+                jref_matrix = ref_matrix[jy0:jy1+1,jx0:jx1+1]
+                jnew_matrix = new_matrix[jy0:jy1+1,jx0:jx1+1]
                 
                 # perform aperture photometry
                 jdiff_aper = ApertureStats(jdiff_matrix, phot_aper)
                 jdiff_annu = ApertureStats(jdiff_matrix, phot_annu)
                 jdiff_flux = jdiff_aper.sum - jdiff_annu.median * (np.pi * upos**2)
                 jdiff_sig = jdiff_annu.mad_std * np.sqrt(np.pi * upos**2)
+                if jdiff_sig<=0.0: continue
                 jdiff_snr = abs(jdiff_flux/jdiff_sig)
                 jdiff_fwhm = jdiff_aper.fwhm.value
                 if np.isnan(jdiff_fwhm): jdiff_fwhm = -99.0
@@ -213,8 +218,6 @@ class ExtractTrans(object):
                 
                 if cutout_write:
                     jstm_cutout = f"MTC_J{jra_hms[1]}{jdec_dms[3]}_cutout.fits"
-                    if cutout_path is not None:
-                        jstm_cutout = os.path.join(cutout_path, jstm_cutout)
 
                     # cutout header
                     jhdr = fits.Header()
@@ -222,7 +225,7 @@ class ExtractTrans(object):
                     jhdr["DEC"]     = jdec_peak
                     jhdr["FILE"]    = jstm_cutout
                     jhdr["XPOS"]    = jx_peak
-                    jhdr["YPOS"]    = jx_peak
+                    jhdr["YPOS"]    = jy_peak
                     jhdr["TRANSID"] = (jtrans_id, "candidate id")
                     jhdr["FILTER"]  = (band, "filter")
                     jhdr["FLUX"]    = (jdiff_flux, f"aperture flux wirh r={upos} pixels")
@@ -231,30 +234,32 @@ class ExtractTrans(object):
                     jhdr["DIFFIMG"] = (os.path.basename(diff_image), "diff image")
                     jhdr["DIFFMODE"] = (idiff_mode, "mode: -1=inverse diff; 1=direct diff")
 
-                    jhdr["NEWIMG"]  = (new_meta.image_header["NEWIMG"], "new image")
-                    jhdr["NEWDATE"] = (new_meta.image_header["DATE"], "date of new image")
-                    jhdr["NEWFWHM"] = (new_meta.image_header["FWHM"], "FWHM of new image in pixels")
-                    jhdr["NEWMRA"]  = (new_meta.image_header["RABIAS"], "RA astrometric offset of new image")
-                    jhdr["NEWMDEC"] = (new_meta.image_header["DECBIAS"], "DEC astrometric offset of new image")
-                    jhdr["NEWSRA"]  = (new_meta.image_header["RASTD"], "RA astrometric rms of new image")
-                    jhdr["NEWSDEC"] = (new_meta.image_header["DECSTD"], "DEC astrometric rms of new image")
+                    jhdr["NEWIMG"]  = (new_header["IMGNAME"], "new image")
+                    jhdr["NEWDATE"] = (new_header["DATE"], "date of new image")
+                    jhdr["NEWFWHM"] = (new_header["FWHM"], "FWHM of new image in pixels")
+                    jhdr["NEWMRA"]  = (new_header["RABIAS"], "RA astrometric offset of new image")
+                    jhdr["NEWMDEC"] = (new_header["DECBIAS"], "DEC astrometric offset of new image")
+                    jhdr["NEWSRA"]  = (new_header["RASTD"], "RA astrometric rms of new image")
+                    jhdr["NEWSDEC"] = (new_header["DECSTD"], "DEC astrometric rms of new image")
 
-                    jhdr["REFIMG"]  = (ref_meta.image_header["REFIMG"], "ref image")
-                    jhdr["REFDATE"] = (ref_meta.image_header["DATE"], "date of reference image")
-                    jhdr["REFFWHM"] = (ref_meta.image_header["FWHM"], "FWHM of ref image in pixels")
-                    jhdr["REFMRA"]  = (ref_meta.image_header["RABIAS"], "RA astrometric offset of ref image")
-                    jhdr["REFMDEC"] = (ref_meta.image_header["DECBIAS"], "DEC astrometric offset of ref image")
-                    jhdr["REFSRA"]  = (ref_meta.image_header["RASTD"], "RA astrometric rms of ref image")
-                    jhdr["REFSDEC"] = (ref_meta.image_header["DECSTD"], "DEC astrometric rms of ref image")
+                    jhdr["REFIMG"]  = (ref_header["IMGNAME"], "ref image")
+                    jhdr["REFDATE"] = (ref_header["DATE"], "date of reference image")
+                    jhdr["REFFWHM"] = (ref_header["FWHM"], "FWHM of ref image in pixels")
+                    jhdr["REFMRA"]  = (ref_header["RABIAS"], "RA astrometric offset of ref image")
+                    jhdr["REFMDEC"] = (ref_header["DECBIAS"], "DEC astrometric offset of ref image")
+                    jhdr["REFSRA"]  = (ref_header["RASTD"], "RA astrometric rms of ref image")
+                    jhdr["REFSDEC"] = (ref_header["DECSTD"], "DEC astrometric rms of ref image")
                 
-                    jcut = np.array([jref_matrix, jnew_matrix, jdiff_matrix], dtype=np.float32)
+                    jcut = np.hstack((jref_matrix, jnew_matrix, jdiff_matrix), dtype=np.float32)
+                    
+                    if cutout_path is not None: jstm_cutout = os.path.join(cutout_path, jstm_cutout)
                     fits.writeto(jstm_cutout, jcut, jhdr, overwrite=True)
                 else:
                     jstm_cutout = None
 
                 # basic parameters:
-                jutc_new = new_meta.image_header["DATE"]
-                jutc_ref = ref_meta.image_header["DATE"]
+                jutc_new = new_header["DATE"]
+                jutc_ref = ref_header["DATE"]
                 jmjd_new = Time(jutc_new, scale="utc").mjd
                 jmjd_ref = Time(jutc_ref, scale="utc").mjd
                 jcrd = SkyCoord(ra=jra_peak*units.degree, dec=jdec_peak*units.degree, frame='icrs')
@@ -262,7 +267,7 @@ class ExtractTrans(object):
                 jl, jb = jcrd.galactic.l.value, jcrd.galactic.b.value
                 jtrans_param = [jtrans_id, jutc_new, jmjd_new, jra_peak, jdec_peak, jlon, jlat, jl, jb,
                                 band, jdiff_flux, jdiff_snr, jdiff_fwhm, idiff_mode, jutc_ref, jmjd_ref, jstm_cutout,
-                                ref_meta.image_header["REFIMG"], new_meta.image_header["NEWIMG"],
+                                ref_header["IMGNAME"], new_header["IMGNAME"],
                                 os.path.basename(diff_image), jref_matrix.T, jnew_matrix.T, jdiff_matrix.T,
                                ]
                 diff_trans_iter.add_row(jtrans_param)
