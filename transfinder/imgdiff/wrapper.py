@@ -18,12 +18,40 @@ def run(new_sciimg,
         swarp_config = "default_config.swarp",
         sextractor_config = "default_config.sex",
         sextractor_param = "default_param.sex",
+        resamp_pixel_scale = 0.43,
+        resamp_image_size = (6100, 6110),
         psf_size = 25, 
         npsf_star_max = 500,
         trans_stamp_size = 49,
         ):
     """
     run the image difference code for Mephisto pilot survey
+    
+    Parameters:
+    new_sciimg: str
+      name of new science image
+    ref_sciimg: str
+      name of reference image
+    new_sciimg_path: str
+      absolute path of new science image
+    ref_sciimg_path: str
+      absolute path of reference image
+    diff_image_path: str
+      absolute path of output difference image
+    config_path: str
+      absolute path of sextractor and swarp configuration files
+    swarp_config: str
+      name of swarp configuration file
+    sextractor_config: str
+      name of sextractor configuration file
+    sextractor_param: str
+      name of sextractor parameter file
+    psf_size: int
+      pixel size of star cutout for PSF modelling
+    npsf_star_max: int
+      maximum number of stars for PSF modelling
+    trans_stamp_size: int
+      pixel size of transient cutout
     """
     # swarp and sextractor
     swarp_config = os.path.join(config_path, swarp_config)
@@ -85,8 +113,17 @@ def run(new_sciimg,
     new_psfmodel = psfmodel_obj.run(new_matrix, new_star_matrix, output_prefix=new_psf_model_prefix)
 
     # 3) image differencing
-    diff_obj = DiffImg(degrid=(16,16), nthreads=-1)
+    diff_obj = DiffImg(degrid=(14,14), nthreads=-1)
     diff_matrix = diff_obj.diff(ref_matrix, new_matrix, ref_psfmodel, new_psfmodel, ref_mask=ref_mask, new_mask=new_mask)
+
+    #for ngrid in range(1,30):
+    #    for nx in range(10):
+    #        tx1 = time.time()
+    #        diff_obj = DiffImg(degrid=(ngrid,ngrid), nthreads=-1)
+    #        diff_matrix = diff_obj.diff(ref_matrix, new_matrix, ref_psfmodel, new_psfmodel, ref_mask=ref_mask, new_mask=new_mask)
+    #        tx2 = time.time()
+    #        dtx = tx2 - tx1
+    #        print(f"^_^ Total {dtx:10.5f} seconds used for ngrid={ngrid}")
 
     # 4) transient detection
     ref_header, new_header = ref_meta[-3], new_meta[-3]
