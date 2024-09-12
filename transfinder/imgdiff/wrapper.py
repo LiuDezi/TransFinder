@@ -1,20 +1,23 @@
 # module to perform image differencing in one loop
-import time
 from astropy.table import Table
-import os, shutil
+from astropy.io import fits
+from astropy.wcs import wcs
+import numpy as np
+import os, shutil, time
 
+from ..utils import crossmatch
 from .base import swarp_shell, sextractor_shell
 from .buildimg import BuildImage
 from .psfmodel import PSFModel
 from .diff import DiffImg
 from .transdet import ExtractTrans
 
-def run(new_sciimg,
-        ref_sciimg,
-        new_sciimg_path,
-        ref_sciimg_path,
-        diff_image_path, 
-        config_path,
+def run(new_sciimg, new_sciimg_path,
+        diff_image_path, config_path,
+        ref_sciimg = None,
+        ref_sciimg_path = None,
+        ref_sciimg_list = None,
+        ref_sciimg_list_path = None, 
         swarp_config = "default_config.swarp",
         sextractor_config = "default_config.sex",
         sextractor_param = "default_param.sex",
@@ -53,6 +56,16 @@ def run(new_sciimg,
     trans_stamp_size: int
       pixel size of transient cutout
     """
+    # basic setup
+    if ref_sciimg is None:
+        if ref_sciimg_list is None:
+            sys.exit("!!! Specify either 'ref_sciimg' or 'ref_sciimg_list'. They can not be both None")
+        else:
+            if ref_sciimg_list_path is None: ref_sciimg_list_path = "." # current path
+            ref_sciimg, ref_sciimg_path = match_refimg(new_sciimg, new_sciimg_path, ref_sciimg_list, ref_sciimg_list_path)
+    else:
+        if ref_sciimg_path is None: ref_sciimg_path = "."
+
     # swarp and sextractor
     swarp_config = os.path.join(config_path, swarp_config)
     sextractor_config = os.path.join(config_path, sextractor_config)
@@ -139,4 +152,39 @@ def run(new_sciimg,
     dt = t1 - t0
     print(f"^_^ Total {dt:.5f} seconds used")
     return
+
+def match_refimg(new_sciimg,
+                 new_sciimg_path,
+                 ref_sciimg_list = "ref_image_20240911.csv",
+                 ref_sciimg_list_path = "/path/",
+                 ):
+    # load reference images
+    ref_sciimg_list_abs = os.path.join(ref_sciimg_list_path, ref_sciimg_list)
+    ref_sciimg_meta = Table.read(ref_sciimg_list_abs, format="ascii.csv")
+
+    # estimate the image center of new image
+    new_sciimg_abs = os.path.join(new_sciimg_path, new_sciimg)
+    new_header = fits.getheader(new_sciimg_abs)
+    new_band = new_header["FILTER"]
+    new_wcs = wcs.WCS(new_header)
+
+    new_xsize, new_ysize = new_wcs.pixel_shape
+    new_ximg_center, new_yimg_center = 0.5*(new_xsize+1), 0.5*(new_ysize+1)
+    new_ra_center, new_dec_center = new_wcs.all_pix2world(new_ximg_center, new_yimg_center, 1)
+    new_ra_center, new_dec_center = new_ra_center.tolist(), new_dec_center.tolist()
+
+    hx_arcsec= 0.5 * new_xsize * new_wcs.proj_plane_pixel_scales()[0].value * 3600.0
+    hy_arcsec= 0.5 * new_ysize * new_wcs.proj_plane_pixel_scales()[1].value * 3600.0
+    match_aperture = np.min([hx_arcsec, hy_arcsec])
+
+    # find the reference image
+    bid = ref_sciimg_meta["filter"]==new_band
+    ref_ra, ref_dec = ref_sciimg_meta["ra_center"][bid], ref_sciimg_meta["dec_center"][bid]
+    ref_id, sci_id = crossmatch(ref_ra,ref_dec,[new_ra_center],[new_dec_center], aperture=match_aperture)
+    if len(ref_id)==0: sys.exit("!!! No reference found")
+    ref_sciimg = ref_sciimg_meta["filename"][bid][ref_id[0]]
+    ref_sciimg_path = ref_sciimg_meta["filepath"][bid][ref_id[0]]
+    print(f"^_^ Match reference image: {ref_sciimg}")
+    print(f"    Reference image path: {ref_sciimg_path}")
+    return ref_sciimg, ref_sciimg_path
 
