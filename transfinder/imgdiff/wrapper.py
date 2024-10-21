@@ -3,7 +3,7 @@ from astropy.table import Table
 from astropy.io import fits
 from astropy.wcs import wcs
 import numpy as np
-import os, shutil, time
+import os, sys, shutil, time
 
 from ..utils import crossmatch
 from .base import swarp_shell, sextractor_shell
@@ -80,10 +80,12 @@ def run(new_sciimg, new_sciimg_path,
     new_star_abs = new_sciimg_abs[:-5] + "_sexcat_gaia.fits"
     new_star_matrix = Table.read(new_star_abs, format="fits", hdu=2)
     new_star_pos = [new_star_matrix["ra"], new_star_matrix["dec"]]
+    #new_star_pos = [new_star_matrix["X_WORLD"], new_star_matrix["Y_WORLD"]]
 
     ref_star_abs = ref_sciimg_abs[:-5] + "_sexcat_gaia.fits"
     ref_star_matrix = Table.read(ref_star_abs, format="fits", hdu=2)
     ref_star_pos = [ref_star_matrix["ra"], ref_star_matrix["dec"]]
+    #ref_star_pos = [ref_star_matrix["X_WORLD"], ref_star_matrix["Y_WORLD"]]
 
     # output setup
     new_image = new_sciimg[:-5] + "_new.fits"
@@ -108,7 +110,10 @@ def run(new_sciimg, new_sciimg_path,
     # 1) match new and reference image
     buildimg_obj = BuildImage(swarp_config, sextractor_config, sextractor_param, 
                               swarp_exe = swarp_executor, 
-                              sextractor_exe = sextractor_executor,)
+                              sextractor_exe = sextractor_executor,
+                              resamp_pixel_scale = resamp_pixel_scale,
+                              resamp_image_size = resamp_image_size,
+                              )
     new_meta = buildimg_obj.image_resamp(new_sciimg_abs, new_star_pos, new_image_abs,)
     ref_meta = buildimg_obj.image_resamp(ref_sciimg_abs, ref_star_pos, ref_image_abs,)
     new_meta = buildimg_obj.phot_match(new_meta, ref_meta, method="fitted", photcal_figure=photcal_figure_abs)
@@ -120,7 +125,7 @@ def run(new_sciimg, new_sciimg_path,
     ref_star_matrix, new_star_matrix = ref_meta[-1], new_meta[-1]
     ref_sid, new_sid = ref_star_matrix["FLAG_STAR"]==1, new_star_matrix["FLAG_STAR"]==1
     ref_star_matrix, new_star_matrix = ref_star_matrix[ref_sid], new_star_matrix[new_sid]
-
+    
     psfmodel_obj = PSFModel(psf_size=psf_size, nstar_max=npsf_star_max, info_frac=0.98, nbasis_max=3)
     ref_psfmodel = psfmodel_obj.run(ref_matrix, ref_star_matrix, output_prefix=ref_psf_model_prefix)
     new_psfmodel = psfmodel_obj.run(new_matrix, new_star_matrix, output_prefix=new_psf_model_prefix)

@@ -23,3 +23,4 @@ Once the network is trained, the parameters can be used as input for transient d
 Pipeline History:
 ===================
 20240621: create this repository;
+20241020: fix two bugs in the pipeline: 1) misuse of x/y indices in constructing PSF normalization map; 2) PSF star regions in the input image are incorrectly relapced in modeling the PSF.

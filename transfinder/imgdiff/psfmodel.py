@@ -134,7 +134,7 @@ class PSFModel(object):
             # an extended stamp
             ix0, ix1 = ix_int-self.psf_size, ix_int+self.psf_size
             iy0, iy1 = iy_int-self.psf_size, iy_int+self.psf_size
-            istm = image_matrix[iy0:iy1+1,ix0:ix1+1]
+            istm = image_matrix[iy0:iy1+1,ix0:ix1+1].copy()
 
             # remove stars locating at image edge
             if istm.shape != (2*self.psf_size+1, 2*self.psf_size+1): continue
@@ -178,6 +178,13 @@ class PSFModel(object):
             istm_interp = galsim.InterpolatedImage(istm_obj,x_interpolant=galsim.Lanczos(7),normalization='flux')
             istm_interp = istm_interp.drawImage(nx=self.psf_size, ny=self.psf_size, scale=1.0,
                                                 method='no_pixel', offset=(-ix_offset, -iy_offset))
+            
+            # double try to find the moment: this is a temporary solution to remove stars containing bad columns
+            try:
+                istm_moment = istm_interp.FindAdaptiveMom()
+            except:
+                continue
+            
             istm = istm_interp.array
             #print(ix_offset, iy_offset)
             #fits.writeto(f"zstar{i}_r.fits", istm, overwrite=True)
@@ -211,7 +218,7 @@ class PSFModel(object):
                     # an extended stamp
                     ix0, ix1 = ix_int-self.psf_size, ix_int+self.psf_size
                     iy0, iy1 = iy_int-self.psf_size, iy_int+self.psf_size
-                    istm = image_matrix[iy0:iy1+1,ix0:ix1+1]
+                    istm = image_matrix[iy0:iy1+1,ix0:ix1+1].copy()
 
                     # remove stars locating at image edge
                     if istm.shape != (2*self.psf_size+1, 2*self.psf_size+1): continue
@@ -257,6 +264,13 @@ class PSFModel(object):
                     istm_interp = galsim.InterpolatedImage(istm_obj,x_interpolant=galsim.Lanczos(7),normalization='flux')
                     istm_interp = istm_interp.drawImage(nx=self.psf_size, ny=self.psf_size, scale=1.0,
                                                         method='no_pixel', offset=(-ix_offset, -iy_offset))
+                    
+                    # double try to find the moment: this is a temporary solution to remove stars containing bad columns
+                    try:
+                        istm_moment = istm_interp.FindAdaptiveMom()
+                    except:
+                        continue
+
                     istm = istm_interp.array
                     #print(ix_offset, iy_offset)
                     #fits.writeto(f"zstar{i}_r.fits", istm, overwrite=True)
@@ -437,9 +451,9 @@ class PSFModel(object):
         if self.nbasis == 1:
             psf_model = psf_basis[:,0]
         else:
-            polyvals = np.array([ifield[ximg, yimg] for ifield in psf_field])
+            polyvals = np.array([ifield[yimg, ximg] for ifield in psf_field])
             psf_model = np.matmul(psf_basis, polyvals.reshape(-1,1))
-            psf_model = psf_model/psf_norm[ximg, yimg]
+            psf_model = psf_model/psf_norm[yimg, ximg]
         psf_model = psf_model.reshape(self.psf_size, self.psf_size)
         return psf_model
 
