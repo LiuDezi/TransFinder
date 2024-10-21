@@ -56,15 +56,32 @@ def run(new_sciimg, new_sciimg_path,
     trans_stamp_size: int
       pixel size of transient cutout
     """
+    # running status
+    #run_status = {0: {"info": "successful", "time": None},
+    #              1: {"info": "ref_img provided, but does NOT exist", "time": None},
+    #              2: {"info": "ref_list provided, but does NOT exist", "time": None},
+    #              3: {"info": "ref_list provided, but does NOT contain ref_img", "time": None},
+    #              4: {"info": "neither ref_img or ref_list provided", "time": None},
+    #              }
+
+    t0 = time.time()
     # basic setup
     if ref_sciimg is None:
         if ref_sciimg_list is None:
-            sys.exit("!!! Specify either 'ref_sciimg' or 'ref_sciimg_list'. They can not be both None")
+            return {4: {"info": "neither ref_img or ref_list provided", "time": time.time()-t0}}
         else:
             if ref_sciimg_list_path is None: ref_sciimg_list_path = "." # current path
-            ref_sciimg, ref_sciimg_path = match_refimg(new_sciimg, new_sciimg_path, ref_sciimg_list, ref_sciimg_list_path)
+            match_res = match_refimg(new_sciimg, new_sciimg_path, ref_sciimg_list, ref_sciimg_list_path)
+            if match_res==2:
+                return {2: {"info": "ref_list provided, but does NOT exist", "time": time.time()-t0}}
+            elif match_res==3:
+                return {3: {"info": "ref_list provided, but does NOT contain ref_img", "time": time.time()-t0}}
+            else:
+                ref_sciimg, ref_sciimg_path = match_res
     else:
         if ref_sciimg_path is None: ref_sciimg_path = "."
+        if not os.path.exists(os.path.join(ref_sciimg_path, ref_sciimg)):
+            return {1: {"info": "ref_img provided, but does NOT exist", "time": time.time()-t0}}
 
     # swarp and sextractor
     swarp_config = os.path.join(config_path, swarp_config)
@@ -106,7 +123,6 @@ def run(new_sciimg, new_sciimg_path,
     os.mkdir(trans_stamp_path)
 
     # main code
-    t0 = time.time()
     # 1) match new and reference image
     buildimg_obj = BuildImage(swarp_config, sextractor_config, sextractor_param, 
                               swarp_exe = swarp_executor, 
@@ -156,7 +172,7 @@ def run(new_sciimg, new_sciimg_path,
     t1 = time.time()
     dt = t1 - t0
     print(f"^_^ Total {dt:.5f} seconds used")
-    return
+    return {0: {"info": "successful", "time": dt}}
 
 def match_refimg(new_sciimg,
                  new_sciimg_path,
@@ -165,6 +181,7 @@ def match_refimg(new_sciimg,
                  ):
     # load reference images
     ref_sciimg_list_abs = os.path.join(ref_sciimg_list_path, ref_sciimg_list)
+    if not os.path.exists(ref_sciimg_list_abs): return 2
     ref_sciimg_meta = Table.read(ref_sciimg_list_abs, format="ascii.csv")
 
     # estimate the image center of new image
@@ -186,7 +203,7 @@ def match_refimg(new_sciimg,
     bid = ref_sciimg_meta["filter"]==new_band
     ref_ra, ref_dec = ref_sciimg_meta["ra_center"][bid], ref_sciimg_meta["dec_center"][bid]
     ref_id, sci_id = crossmatch(ref_ra,ref_dec,[new_ra_center],[new_dec_center], aperture=match_aperture)
-    if len(ref_id)==0: sys.exit("!!! No reference found")
+    if len(ref_id)==0: return 3 # sys.exit("!!! No reference found")
     ref_sciimg = ref_sciimg_meta["filename"][bid][ref_id[0]]
     ref_sciimg_path = ref_sciimg_meta["filepath"][bid][ref_id[0]]
     print(f"^_^ Match reference image: {ref_sciimg}")
